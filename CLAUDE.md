@@ -186,6 +186,43 @@ screencapture -x -R1022,855,200,256 /tmp/qemu_window.png
 
 Note: `screencapture -l <windowID>` doesn't work for QEMU's SDL window (AppleScript can't get the window ID). Use `-R x,y,w,h` with coordinates from AppleScript instead.
 
+## Running on QEMU 10.x (Phase 2 port)
+
+### Build
+
+```fish
+cd ~/dev/pebble-qemu-wasm
+bash build.sh
+```
+
+Binary: `~/dev/qemu-10.0/build/qemu-system-arm`
+
+### Emery boot command
+
+```fish
+~/dev/qemu-10.0/build/qemu-system-arm \
+  -machine pebble-snowy-emery-bb \
+  -kernel ~/dev/pebble-qemu-wasm/firmware/qemu_micro_flash.bin \
+  -drive if=none,id=spi-flash,file=~/dev/pebble-qemu-wasm/firmware/qemu_spi_flash.bin,format=raw \
+  -serial null \
+  -serial null \
+  -serial file:/tmp/pebble_serial.log \
+  -d unimp -D /tmp/qemu_unimp.log
+```
+
+Key differences from QEMU 2.5:
+- Uses `-kernel` instead of `-pflash` for micro flash (machine doesn't support pflash drive)
+- Uses `-drive if=none,id=spi-flash` for SPI NOR flash (same as 2.5)
+- No `-cpu cortex-m4` needed (machine sets it automatically)
+- Serial port mapping: serial0=null, serial1=pebble control (USART2), serial2=debug (USART3)
+
+### Current status (2026-02-10)
+- Firmware v4.9.77-3-geb9f6e61 boots successfully
+- Display renders frames (bootloader splash, firmware UI)
+- TicToc watchface is launched but does not fully render (shows "Install an app to continue")
+- Launcher/Watchfaces menu works
+- UART serial output works on serial2
+
 ## Debugging
 
 ### GDB
