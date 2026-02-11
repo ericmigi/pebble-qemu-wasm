@@ -2,6 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Pebble Emulator</title>
     <script src="coi-serviceworker.min.js"></script>
     <style>
@@ -132,11 +133,21 @@
         }
         #btn-boot:active:not(:disabled) { transform: scale(0.97); }
         #btn-boot:disabled { opacity: 0.5; filter: grayscale(0.4); }
+        @media (max-width: 640px) {
+            body { padding: 12px 8px; }
+            h1 { font-size: 16px; }
+            #controls { flex-wrap: wrap; justify-content: center; }
+            #progress-bar { width: 100%; }
+            #console-wrapper { width: 100%; }
+            #console { height: 150px; font-size: 11px; }
+            #buttons { gap: 6px; }
+            #buttons button { padding: 10px 14px; font-size: 13px; }
+        }
     </style>
 </head>
 <body>
     <h1>Pebble Emulator</h1>
-    <p style="color: #999; font-size: 13px; margin: -5px 0 12px 0; max-width: 600px; line-height: 1.5;">Runs entirely in your browser — no server, no install. QEMU is compiled to WebAssembly, emulating the original Pebble ARM hardware and booting real PebbleOS firmware.</p>
+    <p style="color: #999; font-size: 13px; margin: -5px 0 12px 0; max-width: 600px; line-height: 1.5;">Runs entirely in your browser — no server, no install. QEMU is compiled to WebAssembly, emulating the original Pebble ARM hardware and booting real PebbleOS firmware. Tested on desktop, doesn't work well on mobile yet.</p>
     <div id="controls">
         <label for="fw-select">Firmware:</label>
         <select id="fw-select">
@@ -178,6 +189,11 @@
         var progressFill = document.getElementById('progress-fill');
         var bootBtn = document.getElementById('btn-boot');
         var fwSelect = document.getElementById('fw-select');
+
+        // Default to SDK firmware on mobile (smaller, faster boot)
+        if (window.innerWidth <= 640) {
+            fwSelect.value = 'sdk';
+        }
 
         function ts() {
             var d = new Date();
