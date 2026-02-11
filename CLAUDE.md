@@ -197,17 +197,27 @@ bash build.sh
 
 Binary: `~/dev/qemu-10.0/build/qemu-system-arm`
 
-### Emery boot command
+### Emery boot command (with pebble-tool TCP serial)
 
+```fish
+bash boot_for_pebble_tool.sh
+```
+
+Or manually:
 ```fish
 ~/dev/qemu-10.0/build/qemu-system-arm \
   -machine pebble-snowy-emery-bb \
   -kernel ~/dev/pebble-qemu-wasm/firmware/qemu_micro_flash.bin \
   -drive if=none,id=spi-flash,file=~/dev/pebble-qemu-wasm/firmware/qemu_spi_flash.bin,format=raw \
   -serial null \
-  -serial null \
-  -serial file:/tmp/pebble_serial.log \
+  -serial "tcp::12344,server,nowait" \
+  -serial "tcp::12345,server,nowait" \
   -d unimp -D /tmp/qemu_unimp.log
+```
+
+For standalone debugging with file-based logs instead of TCP:
+```fish
+bash boot_with_logs.sh
 ```
 
 Key differences from QEMU 2.5:
@@ -216,12 +226,32 @@ Key differences from QEMU 2.5:
 - No `-cpu cortex-m4` needed (machine sets it automatically)
 - Serial port mapping: serial0=null, serial1=pebble control (USART2), serial2=debug (USART3)
 
+### Connecting pebble-tool
+
+pebble-tool connects to QEMU via the `--qemu` flag, speaking the FEED/BEEF protocol over TCP serial1 (port 12344).
+
+```fish
+# Install an app
+pebble install --qemu localhost:12344 /path/to/app.pbw
+
+# Take a screenshot
+pebble screenshot --qemu localhost:12344
+
+# Stream logs
+pebble logs --qemu localhost:12344
+```
+
+Notes:
+- SPI flash (`qemu_spi_flash.bin`) is modified in-place when apps are installed. Back up the file first if needed.
+- Wait ~30 seconds after QEMU starts before connecting pebble-tool (firmware needs time to boot).
+
 ### Current status (2026-02-10)
 - Firmware v4.9.77-3-geb9f6e61 boots successfully
 - Display renders frames (bootloader splash, firmware UI)
 - TicToc watchface is launched but does not fully render (shows "Install an app to continue")
 - Launcher/Watchfaces menu works
 - UART serial output works on serial2
+- pebble-tool connects via `--qemu localhost:12344` (screenshot, logs, install confirmed working)
 
 ## Debugging
 

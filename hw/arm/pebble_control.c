@@ -32,7 +32,7 @@
 #include "pebble_control.h"
 #include "hw/arm/pebble.h"
 
-//#define DEBUG_PEBBLE_CONTROL
+////#define DEBUG_PEBBLE_CONTROL
 #ifdef DEBUG_PEBBLE_CONTROL
 #define DPRINTF(fmt, ...)                                 \
     do { printf("PEBBLE_CONTROL: " fmt , ## __VA_ARGS__); \
@@ -450,6 +450,11 @@ static int pebble_control_write(void *opaque, const uint8_t *buf, int len) {
         DPRINTF("%s: Sending packet of %d bytes to host\n", __func__, total_size);
         while (total_size) {
             bytes_sent = qemu_chr_fe_write_all(&s->chr, s->send_char_buf, total_size);
+            if (bytes_sent <= 0) {
+                // Write error (e.g. TCP client disconnected), discard packet
+                pebble_control_consume_send_bytes(s, total_size);
+                break;
+            }
             total_size -= bytes_sent;
             pebble_control_consume_send_bytes(s, bytes_sent);
         }
