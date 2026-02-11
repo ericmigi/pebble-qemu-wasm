@@ -1171,7 +1171,7 @@ static const Property ps_display_init_properties[] = {
 
 
 // -----------------------------------------------------------------------------
-static void ps_display_class_init(ObjectClass *klass, const void *data)
+static void ps_display_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);

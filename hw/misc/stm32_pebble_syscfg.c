@@ -270,7 +270,7 @@ static const Property stm32_syscfg_properties[] = {
     DEFINE_PROP_BIT("boot1", Stm32Syscfg, boot_pins, 1, 0), /* BOOT1 pin */
 };
 
-static void stm32_syscfg_class_init(ObjectClass *klass, const void *data)
+static void stm32_syscfg_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

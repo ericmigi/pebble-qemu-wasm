@@ -410,7 +410,7 @@ static const Property stm32_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", Stm32Uart, chr),
 };
 
-static void stm32_uart_class_init(ObjectClass *klass, const void *data)
+static void stm32_uart_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -2,6 +2,8 @@
 
 Pebble smartwatch emulator running in the browser. QEMU compiled to WebAssembly boots real Pebble firmware and renders the display to an HTML canvas.
 
+**[Demo: PebbleOS in the browser](https://ericmigi.github.io/pebble-qemu-wasm/)**
+
 ![Pebble in browser](pebble_wasm_first_frame.png)
 
 ## How it works
@@ -16,25 +18,27 @@ Key pieces:
 
 ## Quick start (browser)
 
-Prerequisites: Python 3 (for the dev server), pre-built WASM artifacts in `web/`
+Or try the [live demo](https://ericmigi.github.io/pebble-qemu-wasm/) — no install needed.
+
+To run locally, you need Python 3 and the pre-built WASM artifacts in `web/`:
 
 ```sh
 python3 server.py 8080
-# Open http://localhost:8080/pebble.html
+open http://localhost:8080
 ```
 
 The server adds `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers required for `SharedArrayBuffer` (Emscripten pthreads). A plain file server won't work.
 
-The page fetches firmware files (`qemu_micro_flash.bin` 827KB + `qemu_spi_flash.bin` 16MB) via HTTP, then boots the emulator. The WASM binary is 33MB.
+The page fetches firmware files (~17MB total) and the WASM binary (33MB), then boots the emulator.
 
 ## Controls
 
 | Key | Button |
 |-----|--------|
-| Arrow Up / W | Up |
-| Arrow Down / X | Down |
-| Enter / Arrow Right / S | Select |
-| Escape / Backspace / Arrow Left / Q | Back |
+| Arrow Up | Up |
+| Arrow Down | Down |
+| Arrow Right / Enter | Select |
+| Arrow Left / Escape / Backspace | Back |
 
 Buttons can also be clicked with the mouse. Keys are held for 1 second minimum to ensure the firmware registers the press under slow TCI execution.
 
@@ -142,7 +146,7 @@ Place `qemu_micro_flash.bin` and `qemu_spi_flash.bin` in both `firmware/` (nativ
 ├── scripts/                 # Build helper scripts
 ├── firmware/                # Pebble firmware binaries (not checked in)
 └── web/                     # WASM artifacts + HTML pages
-    ├── pebble.html          #   Main emulator page
+    ├── test.html            #   Test page
     ├── qemu-system-arm.js   #   Emscripten loader (343KB)
     ├── qemu-system-arm.wasm #   QEMU binary (33MB)
     └── qemu-system-arm.worker.js

@@ -220,7 +220,7 @@ static const Property stm32f2xx_spi_properties[] = {
 };
 
 static void
-stm32f2xx_spi_class_init(ObjectClass *c, const void *data)
+stm32f2xx_spi_class_init(ObjectClass *c, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(c);
 

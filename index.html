@@ -48,8 +48,8 @@
             image-rendering: pixelated;
             border: 2px solid #333;
             border-radius: 8px;
-            width: 400px;
-            height: 456px;
+            width: 200px;
+            height: 228px;
         }
         #buttons {
             display: flex;
@@ -140,11 +140,14 @@
         <button id="btn-select" title="Select (Enter)">Select</button>
         <button id="btn-down" title="Down (Arrow Down)">Down</button>
     </div>
-    <div class="key-hint">Keys: Escape=Back, Up/Down=Navigate, Enter=Select</div>
+    <div class="key-hint">Keys: Left=Back, Up/Down=Navigate, Right=Select</div>
 
     <div id="console-wrapper">
         <h3>Serial Console</h3>
         <div id="console"></div>
+    </div>
+    <div style="margin-top: 15px; font-size: 11px; color: #666;">
+        <a href="https://github.com/ericmigi/pebble-qemu-wasm" style="color: #4cc9f0; text-decoration: none;">Source on GitHub</a>
     </div>
 
     <script>
@@ -350,6 +353,11 @@
                 Module.preRun.push(function() {
                     try { FS.mkdir('/firmware'); } catch(e) {}
                     try { FS.mkdir('/tmp'); } catch(e) {}
+                    // Pass browser timezone offset to RTC code
+                    // getTimezoneOffset() returns minutes west of UTC (positive = behind UTC)
+                    // We need seconds east of UTC (negative = behind UTC)
+                    var offsetSec = -new Date().getTimezoneOffset() * 60;
+                    ENV.TZ_OFFSET_SEC = String(offsetSec);
                     FS.writeFile('/firmware/qemu_micro_flash.bin', microData);
                     FS.writeFile('/firmware/qemu_spi_flash.bin', spiData);
                     log('Firmware written to virtual filesystem (' + variant + ')');
@@ -521,17 +529,13 @@
         var BUTTON_DOWN   = 1 << 3;
 
         var keyMap = {
+            'ArrowLeft':  BUTTON_BACK,
+            'ArrowUp':    BUTTON_UP,
+            'ArrowRight': BUTTON_SELECT,
+            'ArrowDown':  BUTTON_DOWN,
             'Escape':     BUTTON_BACK,
             'Backspace':  BUTTON_BACK,
-            'ArrowUp':    BUTTON_UP,
-            'ArrowDown':  BUTTON_DOWN,
             'Enter':      BUTTON_SELECT,
-            'ArrowRight': BUTTON_SELECT,
-            'ArrowLeft':  BUTTON_BACK,
-            'q':          BUTTON_BACK,
-            'w':          BUTTON_UP,
-            's':          BUTTON_SELECT,
-            'x':          BUTTON_DOWN,
         };
 
         var buttonStateAddr = 0;

@@ -325,7 +325,7 @@ static void pebble_board_realize(DeviceState *dev, Error **errp)
                             "pebble_board_vibe_in", 1);
 }
 
-static void pebble_board_class_init(ObjectClass *klass, const void *data)
+static void pebble_board_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = pebble_board_realize;

@@ -256,7 +256,7 @@ static Property stm32f2xx_usart_properties[] = {
     DEFINE_PROP_END_OF_LIST(),
 };
 
-static void stm32f2xx_usart_class_init(ObjectClass *klass, const void *data)
+static void stm32f2xx_usart_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

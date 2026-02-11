@@ -196,13 +196,25 @@ f2xx_rtc_compute_target_time_from_host_time(f2xx_rtc *s, uint64_t rtc_period_ns,
     gettimeofday(&tv, NULL);
     int64_t host_time_us = tv.tv_sec * 1000000LL + (tv.tv_usec);
 
+    // Apply local timezone offset if provided via environment (e.g. from browser JS).
+    // TZ_OFFSET_SEC is seconds east of UTC (e.g. -28800 for PST).
+    static int64_t tz_offset_us = 0;
+    static int tz_checked = 0;
+    if (!tz_checked) {
+        const char *tz_str = getenv("TZ_OFFSET_SEC");
+        if (tz_str) {
+            tz_offset_us = (int64_t)atoi(tz_str) * 1000000LL;
+        }
+        tz_checked = 1;
+    }
+
     // Compute the target time by adding the offset
-    int64_t target_time_us = host_time_us + s->host_to_target_offset_us;
+    int64_t target_time_us = host_time_us + s->host_to_target_offset_us + tz_offset_us;
 
     // Convert to target ticks according period set in the RTC
     time_t target_time_ticks = (target_time_us * 1000) / rtc_period_ns;
 
-    // Convert to date, hour, min, sec components
+    // Convert to date, hour, min, sec components (gmtime since we already applied tz offset)
     gmtime_r(&target_time_ticks, target_tm);
 
 
@@ -666,7 +678,7 @@ f2xx_rtc_realize(DeviceState *dev, Error **errp)
 }
 
 static void
-f2xx_rtc_class_init(ObjectClass *klass, const void *data)
+f2xx_rtc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = f2xx_rtc_realize;

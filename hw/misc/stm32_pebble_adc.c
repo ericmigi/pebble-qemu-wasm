@@ -223,7 +223,7 @@ stm32f2xx_adc_realize(DeviceState *dev, Error **errp)
 
 
 static void
-stm32f2xx_adc_class_init(ObjectClass *klass, const void *data)
+stm32f2xx_adc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
