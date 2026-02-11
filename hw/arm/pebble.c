@@ -128,6 +128,7 @@ static PblButtonID s_waiting_key_up_id = PBL_BUTTON_ID_NONE;
 static QEMUTimer *s_button_timer;
 static PebbleControl *s_pebble_control;
 static qemu_irq s_button_irq[PBL_NUM_BUTTONS];
+static bool s_buttons_initialized = false;
 static qemu_irq s_button_wakeup;
 
 static void prv_send_key_up(void *opaque)
@@ -203,6 +204,9 @@ static const QemuInputHandler pebble_keyboard_handler = {
 
 void pebble_set_button_state(uint32_t button_state)
 {
+    if (!s_buttons_initialized) {
+        return;
+    }
     int button_id;
     for (button_id = 0; button_id < PBL_NUM_BUTTONS; button_id++) {
         uint32_t mask = 1 << button_id;
@@ -216,18 +220,18 @@ void pebble_set_button_state(uint32_t button_state)
 /* Shared button state for JavaScript → QEMU communication.
  * JavaScript writes button bitmask, QEMU timer reads and applies it.
  * Bit 0=back, 1=up, 2=select, 3=down. */
-static volatile uint32_t pebble_wasm_button_state = 0;
-static volatile uint32_t pebble_wasm_last_button_state = 0;
+static uint32_t pebble_wasm_button_state = 0;
+static uint32_t pebble_wasm_last_button_state = 0;
 static QEMUTimer *pebble_wasm_button_timer;
 
 EMSCRIPTEN_KEEPALIVE void pebble_set_buttons(uint32_t state)
 {
-    pebble_wasm_button_state = state;
+    __atomic_store_n(&pebble_wasm_button_state, state, __ATOMIC_SEQ_CST);
 }
 
 static void pebble_wasm_button_poll(void *opaque)
 {
-    uint32_t state = pebble_wasm_button_state;
+    uint32_t state = __atomic_load_n(&pebble_wasm_button_state, __ATOMIC_SEQ_CST);
     if (state != pebble_wasm_last_button_state) {
         pebble_set_button_state(state);
         pebble_wasm_last_button_state = state;
@@ -272,6 +276,7 @@ void pebble_init_buttons(Stm32Gpio *gpio[], const PblButtonMap *map)
             s_button_irq[i] = irq;
         }
     }
+    s_buttons_initialized = true;
     s_button_wakeup = qdev_get_gpio_in((DeviceState *)gpio[STM32_GPIOA_INDEX],
                                         0);
     QemuInputHandlerState *ihs =
@@ -280,10 +285,10 @@ void pebble_init_buttons(Stm32Gpio *gpio[], const PblButtonMap *map)
 
 #ifdef __EMSCRIPTEN__
     /* Start polling timer for WASM button input */
-    pebble_wasm_button_timer = timer_new_ms(QEMU_CLOCK_REALTIME,
+    pebble_wasm_button_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                              pebble_wasm_button_poll, NULL);
     timer_mod(pebble_wasm_button_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 100);
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
 #endif
 }
 

@@ -148,6 +148,7 @@
                 if (text.indexOf('Exception') >= 0) return;
                 if (text.indexOf('unsupported') >= 0) return;
                 if (text.indexOf('unimplemented') >= 0) return;
+                if (text.indexOf('Not implemented') >= 0) return;
                 if (text.indexOf('...') === 0) return;
                 log('[err] ' + text);
             },
@@ -211,8 +212,6 @@
         var canvasCtx = document.getElementById('canvas').getContext('2d');
 
         function renderLoop() {
-            requestAnimationFrame(renderLoop);
-
             if (!runtimeReady) return;
 
             try {
@@ -251,7 +250,8 @@
                 // Ignore errors during early boot
             }
         }
-        requestAnimationFrame(renderLoop);
+        // Use setInterval — Emscripten's PROXY_TO_PTHREAD hijacks rAF
+        setInterval(renderLoop, 50);
 
         // ================================================================
         // Button input
@@ -289,11 +289,20 @@
             }
         }
 
+        // Keyboard events need a minimum hold time because the emulated
+        // CPU runs slower than real-time under TCI. A brief keydown+keyup
+        // can be missed if the firmware hasn't serviced the GPIO interrupt.
+        var keyHoldTimers = {};
+
         document.addEventListener('keydown', function(e) {
             var bit = keyMap[e.key];
             if (bit !== undefined) {
                 e.preventDefault();
+                if (e.repeat) return;
                 updateButtons(bit, true);
+                // Cancel any pending release for this key
+                if (keyHoldTimers[e.key]) clearTimeout(keyHoldTimers[e.key]);
+                keyHoldTimers[e.key] = null;
             }
         });
 
@@ -301,7 +310,12 @@
             var bit = keyMap[e.key];
             if (bit !== undefined) {
                 e.preventDefault();
-                updateButtons(bit, false);
+                // Delay release to ensure firmware sees the press
+                if (keyHoldTimers[e.key]) clearTimeout(keyHoldTimers[e.key]);
+                keyHoldTimers[e.key] = setTimeout(function() {
+                    updateButtons(bit, false);
+                    keyHoldTimers[e.key] = null;
+                }, 1000);
             }
         });
 
