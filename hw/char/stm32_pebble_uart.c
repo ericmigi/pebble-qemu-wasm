@@ -25,7 +25,7 @@
 #include "qemu/log.h"
 #include "qapi/error.h"
 
-/* #define DEBUG_STM32_UART */
+//#define DEBUG_STM32_UART
 #ifdef DEBUG_STM32_UART
 #define DPRINTF(fmt, ...) \
     do { printf("STM32_UART: " fmt , ## __VA_ARGS__); } while (0)
@@ -116,7 +116,7 @@ static void stm32_uart_update_irq(Stm32Uart *s)
     int new_level =
         (s->USART_CR1_TXEIE && s->USART_SR_TXE) ||
         (s->USART_CR1_TCIE && s->USART_SR_TC) ||
-        (s->USART_CR1_RXNEIE && s->USART_SR_RXNE);
+        (s->USART_CR1_RXNEIE && (s->USART_SR_RXNE || s->USART_SR_ORE));
 
     if (new_level != s->curr_irq_level) {
         qemu_set_irq(s->irq, new_level);
@@ -124,15 +124,31 @@ static void stm32_uart_update_irq(Stm32Uart *s)
     }
 }
 
-/* Fill the receive data register from the buffer */
+/* Fill the receive data register from the buffer.
+ * Matches QEMU 2.5 fill_receive_data_register behavior. */
 static void stm32_uart_fill_rdr(Stm32Uart *s)
 {
-    if (s->rcv_char_bytes > 0) {
-        s->USART_RDR = s->rcv_char_buf[0];
+    if (s->rcv_char_bytes == 0) {
+        return;
+    }
+
+    /* Pull next byte from buffer */
+    uint8_t byte = s->rcv_char_buf[0];
+    s->rcv_char_bytes--;
+    memmove(s->rcv_char_buf, s->rcv_char_buf + 1, s->rcv_char_bytes);
+
+    if (s->USART_CR1_UE && s->USART_CR1_RE) {
+        if (s->USART_SR_RXNE) {
+            /* Overrun: RDR still has unread data */
+            DPRINTF("fill_rdr: overrun error\n");
+            s->USART_SR_ORE = 1;
+            s->sr_read_since_ore_set = false;
+            stm32_uart_update_irq(s);
+        }
+
+        s->USART_RDR = byte;
         s->USART_SR_RXNE = 1;
-        /* Shift buffer down */
-        s->rcv_char_bytes--;
-        memmove(s->rcv_char_buf, s->rcv_char_buf + 1, s->rcv_char_bytes);
+        stm32_uart_update_irq(s);
     }
 }
 
@@ -140,48 +156,34 @@ static void stm32_uart_fill_rdr(Stm32Uart *s)
 static int stm32_uart_can_receive(void *opaque)
 {
     Stm32Uart *s = (Stm32Uart *)opaque;
-    int available = USART_RCV_BUF_LEN - s->rcv_char_bytes;
-    if (s->USART_SR_RXNE) {
-        /* One byte is in the RDR, so we can buffer but not infinitely */
-        return available;
-    }
-    return available > 0 ? available : 0;
+
+    /* Return available buffer space (matches QEMU 2.5 behavior) */
+    return (USART_RCV_BUF_LEN - s->rcv_char_bytes);
 }
 
-/* Chardev receive handler - data received */
+/* Chardev receive handler - data received.
+ * Matches QEMU 2.5 behavior: buffer all bytes first, then fill RDR. */
 static void stm32_uart_receive(void *opaque, const uint8_t *buf, int size)
 {
     Stm32Uart *s = (Stm32Uart *)opaque;
 
+    assert(size > 0);
+
     if (!s->USART_CR1_UE || !s->USART_CR1_RE) {
-        DPRINTF("Dropping chars, UART not enabled\n");
+        DPRINTF("Dropping %d chars, UART not enabled (UE=%d RE=%d)\n",
+                size, s->USART_CR1_UE, s->USART_CR1_RE);
         return;
     }
+    DPRINTF("receive %d bytes, RXNE=%d, buf_bytes=%d, first=0x%02x\n",
+            size, s->USART_SR_RXNE, s->rcv_char_bytes, buf[0]);
 
-    if (s->USART_SR_RXNE) {
-        /* RDR is full, buffer the incoming data */
-        int space = USART_RCV_BUF_LEN - s->rcv_char_bytes;
-        int to_copy = MIN(size, space);
-        if (to_copy > 0) {
-            memcpy(s->rcv_char_buf + s->rcv_char_bytes, buf, to_copy);
-            s->rcv_char_bytes += to_copy;
-        }
-        if (to_copy < size) {
-            s->USART_SR_ORE = 1;
-        }
-    } else {
-        /* RDR is empty, put first byte in RDR, buffer the rest */
-        s->USART_RDR = buf[0];
-        s->USART_SR_RXNE = 1;
-        if (size > 1) {
-            int space = USART_RCV_BUF_LEN - s->rcv_char_bytes;
-            int to_copy = MIN(size - 1, space);
-            memcpy(s->rcv_char_buf + s->rcv_char_bytes, buf + 1, to_copy);
-            s->rcv_char_bytes += to_copy;
-        }
-    }
+    /* Buffer all incoming bytes first */
+    assert(size <= USART_RCV_BUF_LEN - s->rcv_char_bytes);
+    memmove(s->rcv_char_buf + s->rcv_char_bytes, buf, size);
+    s->rcv_char_bytes += size;
 
-    stm32_uart_update_irq(s);
+    /* Move next byte into RDR if ready */
+    stm32_uart_fill_rdr(s);
 }
 
 /* Chardev event handler */

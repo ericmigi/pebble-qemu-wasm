@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>QEMU ARM WASM Test</title>
+    <style>
+        body { background: #1a1a2e; color: #e0e0e0; font-family: monospace; padding: 20px; }
+        #console { background: #0a0a0a; color: #0f0; padding: 10px; height: 400px; overflow-y: auto; white-space: pre-wrap; border: 1px solid #333; }
+        #status { margin-bottom: 10px; padding: 5px; background: #16213e; }
+    </style>
+</head>
+<body>
+    <h1>QEMU ARM WASM Test</h1>
+    <div id="status">Loading...</div>
+    <div id="console"></div>
+    <script>
+        const statusEl = document.getElementById('status');
+        const consoleEl = document.getElementById('console');
+        function log(msg) {
+            consoleEl.textContent += msg + '\n';
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+        function setStatus(msg) { statusEl.textContent = msg; log('[status] ' + msg); }
+
+        setStatus('Initializing QEMU...');
+
+        var Module = {
+            // Test with mps2-an385 (Cortex-M3, built-in, no firmware needed)
+            arguments: [
+                '-machine', 'mps2-an385',
+                '-display', 'none',
+                '-serial', 'stdio',
+                '-monitor', 'none',
+                '-parallel', 'none',
+            ],
+            print: function(text) { log(text); },
+            printErr: function(text) { log('[stderr] ' + text); },
+            onRuntimeInitialized: function() { setStatus('QEMU runtime initialized'); },
+        };
+        // Dynamically load QEMU module after page loads
+        window.addEventListener('load', function() {
+            setStatus('Loading QEMU WASM module (33MB)...');
+            var script = document.createElement('script');
+            script.src = 'qemu-system-arm.js';
+            document.body.appendChild(script);
+        });
+    </script>
+</body>
+</html>

@@ -32,11 +32,10 @@
 #include "pebble_control.h"
 #include "hw/arm/pebble.h"
 
-////#define DEBUG_PEBBLE_CONTROL
+//#define DEBUG_PEBBLE_CONTROL
 #ifdef DEBUG_PEBBLE_CONTROL
 #define DPRINTF(fmt, ...)                                 \
     do { printf("PEBBLE_CONTROL: " fmt , ## __VA_ARGS__); \
-         usleep(1000); \
     } while (0)
 #else
 #define DPRINTF(fmt, ...)
@@ -44,7 +43,6 @@
 
 #define EPRINTF(fmt, ...)                                 \
     do { printf("PEBBLE_CONTROL: " fmt , ## __VA_ARGS__); \
-         usleep(1000); \
     } while (0)
 
 
@@ -327,7 +325,8 @@ static void pebble_control_parse_receive_buffer(PebbleControl *s)
         uint16_t protocol = ntohs(hdr->protocol);
         const PebbleControlMessageHandler* handler = pebble_control_find_handler(s, protocol);
         if (!handler) {
-            DPRINTF("%s: passing packet with protocol %d onto target\n", __func__, protocol);
+            printf("PEBBLE_CONTROL: %s: passing packet with protocol %d (%d bytes) onto target\n",
+                   __func__, protocol, total_size);
             s->target_send_bytes = total_size;
             pebble_control_forward_to_target(s);
             if (s->target_send_bytes) {
@@ -367,6 +366,11 @@ static void pebble_control_receive(void *opaque, const uint8_t *buf, int size)
     PebbleControl *s = (PebbleControl *)opaque;
 
     assert(size > 0);
+    printf("PEBBLE_CONTROL: %s: received %d bytes from host, first:", __func__, size);
+    for (int di = 0; di < size && di < 32; di++) {
+        printf(" %02x", buf[di]);
+    }
+    printf("\n");
 
     // Copy the characters into our buffer first
     assert (size <= PBLCONTROL_BUF_LEN - s->rcv_char_bytes);
@@ -447,9 +451,17 @@ static int pebble_control_write(void *opaque, const uint8_t *buf, int len) {
 
         // We have a complete packet, send it out the front end
         int bytes_sent;
-        DPRINTF("%s: Sending packet of %d bytes to host\n", __func__, total_size);
+        printf("PEBBLE_CONTROL: %s: Sending packet of %d bytes to host (proto=0x%04x)\n",
+               __func__, total_size, ntohs(hdr->protocol));
+        printf("PEBBLE_CONTROL: %s: bytes:", __func__);
+        for (int di = 0; di < total_size && di < 64; di++) {
+            printf(" %02x", s->send_char_buf[di]);
+        }
+        printf("\n");
         while (total_size) {
             bytes_sent = qemu_chr_fe_write_all(&s->chr, s->send_char_buf, total_size);
+            printf("PEBBLE_CONTROL: %s: qemu_chr_fe_write_all(%d) returned %d\n",
+                   __func__, total_size, bytes_sent);
             if (bytes_sent <= 0) {
                 // Write error (e.g. TCP client disconnected), discard packet
                 pebble_control_consume_send_bytes(s, total_size);

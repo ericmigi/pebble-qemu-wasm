@@ -1,0 +1,6 @@
+# WASM build output (too large for git)
+qemu-system-arm.wasm
+qemu-system-arm.js
+qemu-system-arm.worker.js
+qemu_micro_flash.bin
+qemu_spi_flash.bin
