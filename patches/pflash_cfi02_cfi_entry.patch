@@ -1,0 +1,48 @@
+diff --git a/hw/block/pflash_cfi02.c b/hw/block/pflash_cfi02.c
+index 315a536..4367675 100644
+--- a/hw/block/pflash_cfi02.c
++++ b/hw/block/pflash_cfi02.c
+@@ -376,6 +376,11 @@ static uint64_t pflash_read(void *opaque, hwaddr offset, unsigned int width)
+         ret = pfl->status;
+         trace_pflash_read_status(pfl->name, ret);
+         break;
++    case 0x70:
++        /* Macronix Read Status Register - bit 7 = device ready */
++        ret = 0x80; /* Device ready, no errors */
++        pflash_reset_state_machine(pfl);
++        break;
+     case 0x98:
+         /* CFI query mode */
+         if (boff < sizeof(pfl->cfi_table)) {
+@@ -470,8 +475,8 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
+         pfl->read_counter = 0;
+         /* We're in read mode */
+     check_unlock0:
+-        if (boff == 0x55 && cmd == 0x98) {
+-            /* Enter CFI query mode */
++        if ((boff == 0x55 || boff == 0x555) && cmd == 0x98) {
++            /* Enter CFI query mode (accept 0x555 for Macronix parts) */
+             pfl->wcycle = WCYCLE_CFI;
+             pfl->cmd = 0x98;
+             return;
+@@ -495,6 +500,11 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
+         if (cmd == 0xB0) { /* Erase Suspend */
+             return;
+         }
++        /* Macronix Read Status Register (0x70) - single cycle, no unlock */
++        if (cmd == 0x70) {
++            pfl->cmd = 0x70;
++            return;
++        }
+         if (boff != pfl->unlock_addr0 || cmd != 0xAA) {
+             trace_pflash_unlock0_failed(pfl->name, boff,
+                                         cmd, pfl->unlock_addr0);
+@@ -576,7 +586,7 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
+              * We can enter CFI query mode from autoselect mode, but we must
+              * return to autoselect mode after a reset.
+              */
+-            if (boff == 0x55 && cmd == 0x98) {
++            if ((boff == 0x55 || boff == 0x555) && cmd == 0x98) {
+                 /* Enter autoselect CFI query mode */
+                 pfl->wcycle = WCYCLE_AUTOSELECT_CFI;
+                 pfl->cmd = 0x98;
