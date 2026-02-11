@@ -224,6 +224,14 @@ static uint32_t pebble_wasm_button_state = 0;
 static uint32_t pebble_wasm_last_button_state = 0;
 static QEMUTimer *pebble_wasm_button_timer;
 
+/* Export the address of button state so JavaScript can write directly
+ * to shared memory via Atomics.store(), bypassing slow PROXY_TO_PTHREAD
+ * function call proxying. */
+EMSCRIPTEN_KEEPALIVE uint32_t pebble_button_state_addr(void)
+{
+    return (uint32_t)(uintptr_t)&pebble_wasm_button_state;
+}
+
 EMSCRIPTEN_KEEPALIVE void pebble_set_buttons(uint32_t state)
 {
     __atomic_store_n(&pebble_wasm_button_state, state, __ATOMIC_SEQ_CST);
@@ -237,7 +245,7 @@ static void pebble_wasm_button_poll(void *opaque)
         pebble_wasm_last_button_state = state;
     }
     timer_mod(pebble_wasm_button_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 16);
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 16);
 }
 #endif
 

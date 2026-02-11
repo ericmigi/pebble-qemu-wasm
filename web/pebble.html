@@ -278,14 +278,27 @@
             'x':          BUTTON_DOWN,
         };
 
+        var buttonStateAddr = 0; // HEAPU32 index, resolved lazily
+
         function updateButtons(bit, pressed) {
             if (pressed) {
                 buttonState |= bit;
             } else {
                 buttonState &= ~bit;
             }
-            if (runtimeReady && Module._pebble_set_buttons) {
-                Module._pebble_set_buttons(buttonState);
+            if (!runtimeReady) return;
+            // Write directly to WASM shared memory for instant cross-thread
+            // visibility (the proxied Module._pebble_set_buttons call has
+            // multi-second latency under PROXY_TO_PTHREAD + TCI)
+            if (buttonStateAddr) {
+                Atomics.store(Module.HEAPU32, buttonStateAddr, buttonState);
+            } else if (Module._pebble_button_state_addr) {
+                var addr = Module._pebble_button_state_addr();
+                if (addr) {
+                    buttonStateAddr = addr >> 2;
+                    Atomics.store(Module.HEAPU32, buttonStateAddr, buttonState);
+                    log('[button] Direct memory at 0x' + addr.toString(16));
+                }
             }
         }
 
