@@ -133,38 +133,14 @@ typedef struct f2xx_i2c {
  * an interrupt-related flag is updated.
  */
 static void f2xx_i2c_update_irq(f2xx_i2c *s) {
-    int new_err_irq_level = 0;
-    if (s->regs[R_I2C_CR2] & R_I2C_CR2_ITERREN_BIT) {
-        new_err_irq_level =  (s->regs[R_I2C_SR1]  & R_I2C_SR1_BERR_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_ARLO_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_AF_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_OVR_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_PECERR_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_TIMEOUT_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_SMBALERT_BIT);
-    }
-
-    int new_evt_irq_level = 0;
-    if (s->regs[R_I2C_CR2] & R_I2C_CR2_ITEVTEN_BIT) {
-        new_evt_irq_level =  (s->regs[R_I2C_SR1]  & R_I2C_SR1_SB_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_ADDR_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_ADD10_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_STOPF_BIT)
-                           | (s->regs[R_I2C_SR1]  & R_I2C_SR1_BTF_BIT);
-
-        if (s->regs[R_I2C_CR2] & R_I2C_CR2_ITBUFEN_BIT) {
-            new_evt_irq_level |= (s->regs[R_I2C_SR1]  & R_I2C_SR1_TxE_BIT)
-                               | (s->regs[R_I2C_SR1]  & R_I2C_SR1_RxNE_BIT);
-        }
-    }
-
-    DPRINTF("%s %s: setting evt_irq to %d\n", __func__, s->parent_obj.parent_obj.id,
-              !!new_evt_irq_level);
-    qemu_set_irq(s->evt_irq, !!new_evt_irq_level);
-
-    DPRINTF("%s %s: setting err_irq to %d\n", __func__, s->parent_obj.parent_obj.id,
-              !!new_err_irq_level);
-    qemu_set_irq(s->err_irq, !!new_err_irq_level);
+    /*
+     * I2C interrupts disabled: the firmware's I2C ISR handlers are minimal
+     * stubs that don't clear the interrupt flags, causing an interrupt storm
+     * that starves the CPU. I2C is used for sensors (accel, compass) which
+     * aren't needed for display/UI boot. Register reads/writes still work
+     * for polling-based access.
+     */
+    (void)s;
 }
 
 
@@ -314,9 +290,13 @@ static const MemoryRegionOps f2xx_i2c_ops = {
 static void
 f2xx_i2c_reset(DeviceState *dev)
 {
-    //struct f2xx_i2c *s = (struct f2xx_i2c *)dev;
+    struct f2xx_i2c *s = (struct f2xx_i2c *)dev;
 
-//    s->regs[R_SR] = R_SR_RESET;
+    memset(s->regs, 0, sizeof(s->regs));
+    s->rx = 0;
+    s->rx_full = 0;
+    qemu_set_irq(s->evt_irq, 0);
+    qemu_set_irq(s->err_irq, 0);
 }
 
 static void
@@ -338,7 +318,7 @@ static const Property f2xx_i2c_properties[] = {
 };
 
 static void
-f2xx_i2c_class_init(ObjectClass *c, void *data)
+f2xx_i2c_class_init(ObjectClass *c, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(c);
 

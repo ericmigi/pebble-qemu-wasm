@@ -169,24 +169,6 @@ pip3 install tomli 2>&1 | tail -1
 echo "  Pebble overlay complete."
 '
 
-echo "=== Patching configure for exe_wrapper ==="
-
-# QEMU 10.1 configure doesn't add exe_wrapper for emscripten cross-compilation.
-# Meson needs it to run cross-compiled test executables during build.
-# Use Python to patch since shell quoting is fragile.
-docker exec "${CONTAINER_NAME}" python3 -c "
-import re
-with open('/qemu-rw/configure', 'r') as f:
-    content = f.read()
-# Add exe_wrapper line after the strip line in cross file generation
-old = 'echo \"strip = [\$(meson_quote \$strip)]\" >> \$cross'
-new = old + chr(10) + '  echo \"exe_wrapper = [' + chr(39) + 'node' + chr(39) + ']\" >> \$cross'
-content = content.replace(old, new, 1)
-with open('/qemu-rw/configure', 'w') as f:
-    f.write(content)
-print('Patched configure to add exe_wrapper')
-"
-
 echo "=== Configuring and building ==="
 
 docker exec "${CONTAINER_NAME}" bash -c '
@@ -205,8 +187,8 @@ emconfigure /qemu-rw/configure \
     --disable-pie \
     --extra-cflags="-DSTM32_UART_NO_BAUD_DELAY"
 
-# Build
-emmake make -j$(nproc) qemu-system-arm 2>&1
+# Build — Emscripten outputs .js extension, so target is qemu-system-arm.js
+ninja -j$(nproc) qemu-system-arm.js 2>&1
 
 EXIT_CODE=$?
 echo "EXIT_CODE=$EXIT_CODE"

@@ -38,6 +38,9 @@
 #define R_CR1_LSBFIRST (1 <<  7)
 #define R_CR1_SPE      (1 <<  6)
 #define R_CR2             (0x04 / 4)
+#define R_CR2_TXEIE    (1 << 7)
+#define R_CR2_RXNEIE   (1 << 6)
+#define R_CR2_ERRIE    (1 << 5)
 
 #define R_SR       (0x08 / 4)
 #define R_SR_RESET    0x0002
@@ -70,6 +73,25 @@ typedef struct stm32f2xx_spi_s {
     uint16_t regs[R_MAX];
 } Stm32Spi;
 
+static void
+stm32f2xx_spi_update_irq(Stm32Spi *s)
+{
+    int level = 0;
+    uint16_t sr = s->regs[R_SR];
+    uint16_t cr2 = s->regs[R_CR2];
+
+    if ((sr & R_SR_TXE) && (cr2 & R_CR2_TXEIE)) {
+        level = 1;
+    }
+    if ((sr & R_SR_RXNE) && (cr2 & R_CR2_RXNEIE)) {
+        level = 1;
+    }
+    if ((sr & R_SR_OVR) && (cr2 & R_CR2_ERRIE)) {
+        level = 1;
+    }
+    qemu_set_irq(s->irq, level);
+}
+
 static uint64_t
 stm32f2xx_spi_read(void *arg, hwaddr offset, unsigned size)
 {
@@ -88,6 +110,8 @@ stm32f2xx_spi_read(void *arg, hwaddr offset, unsigned size)
     switch (offset) {
     case R_DR:
         s->regs[R_SR] &= ~R_SR_RXNE;
+        stm32f2xx_spi_update_irq(s);
+        break;
     }
     return r;
 }
@@ -142,6 +166,11 @@ stm32f2xx_spi_write(void *arg, hwaddr addr, uint64_t data, unsigned size)
 
         s->regs[R_SR] |= R_SR_RXNE;
         s->regs[R_SR] |= R_SR_TXE;
+        stm32f2xx_spi_update_irq(s);
+        break;
+    case R_CR2:
+        s->regs[R_CR2] = data;
+        stm32f2xx_spi_update_irq(s);
         break;
     default:
         if (addr < ARRAY_SIZE(s->regs)) {
@@ -191,7 +220,7 @@ static const Property stm32f2xx_spi_properties[] = {
 };
 
 static void
-stm32f2xx_spi_class_init(ObjectClass *c, void *data)
+stm32f2xx_spi_class_init(ObjectClass *c, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(c);
 

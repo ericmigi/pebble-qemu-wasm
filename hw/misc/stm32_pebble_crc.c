@@ -207,7 +207,7 @@ f2xx_crc_reset(DeviceState *ds)
 
 
 static void
-f2xx_crc_class_init(ObjectClass *klass, void *data)
+f2xx_crc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = f2xx_crc_realize;

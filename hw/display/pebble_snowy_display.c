@@ -62,10 +62,61 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "qapi/error.h"
+#include "qemu/timer.h"
+#include "hw/core/cpu.h"
 #include "pebble_snowy_display.h"
 #include "pebble_snowy_display_overlays.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+/* Export framebuffer info for JavaScript Canvas rendering.
+ * JavaScript polls these via Module._pebble_display_*() functions
+ * and draws the framebuffer to an HTML5 Canvas element. */
+static volatile uint8_t *pebble_wasm_fb_ptr = NULL;
+static volatile int pebble_wasm_fb_width = 0;
+static volatile int pebble_wasm_fb_height = 0;
+static volatile int pebble_wasm_fb_stride = 0;
+static volatile int pebble_wasm_frame_count = 0;
+
+EMSCRIPTEN_KEEPALIVE int pebble_display_width(void) {
+    return pebble_wasm_fb_width;
+}
+EMSCRIPTEN_KEEPALIVE int pebble_display_height(void) {
+    return pebble_wasm_fb_height;
+}
+EMSCRIPTEN_KEEPALIVE int pebble_display_stride(void) {
+    return pebble_wasm_fb_stride;
+}
+EMSCRIPTEN_KEEPALIVE int pebble_display_frame_count(void) {
+    return pebble_wasm_frame_count;
+}
+EMSCRIPTEN_KEEPALIVE uint8_t *pebble_display_data(void) {
+    return (uint8_t *)pebble_wasm_fb_ptr;
+}
+static volatile int pebble_wasm_timer_ticks = 0;
+static volatile int pebble_wasm_redraw_pending = 0;
+static volatile int pebble_wasm_cpu_halted = -1;
+EMSCRIPTEN_KEEPALIVE int pebble_timer_ticks(void) {
+    return pebble_wasm_timer_ticks;
+}
+EMSCRIPTEN_KEEPALIVE int pebble_redraw_pending(void) {
+    return pebble_wasm_redraw_pending;
+}
+EMSCRIPTEN_KEEPALIVE int pebble_cpu_halted(void) {
+    return pebble_wasm_cpu_halted;
+}
+static volatile uint32_t pebble_wasm_cpu_pc = 0;
+EMSCRIPTEN_KEEPALIVE uint32_t pebble_cpu_pc(void) {
+    return pebble_wasm_cpu_pc;
+}
+#endif
+
+/* Disable verbose debug output for WASM builds — the usleep() calls in
+ * DPRINTF are extremely expensive under Emscripten's ASYNCIFY. */
+#ifndef __EMSCRIPTEN__
 #define DEBUG_PEBBLE_SNOWY_DISPLAY
+#endif
 #ifdef DEBUG_PEBBLE_SNOWY_DISPLAY
 // NOTE: The usleep() helps the MacOS stdout from freezing when we have a lot of print out
 #define DPRINTF(fmt, ...)                                       \
@@ -196,6 +247,9 @@ typedef struct {
     // Which command set we are emulating
     PDisplayCmdSet cmd_set;
 
+#ifdef __EMSCRIPTEN__
+    QEMUTimer *wasm_refresh_timer;
+#endif
 } PSDisplayGlobals;
 
 static uint8_t *get_pebble_logo_4colors_image(int *width, int *height);
@@ -850,6 +904,16 @@ static void ps_display_update_display(void *arg)
     }
 
     dpy_gfx_update(s->con, 0, 0, s->num_cols, s->num_rows);
+
+#ifdef __EMSCRIPTEN__
+    /* Update exported framebuffer info for JavaScript rendering */
+    pebble_wasm_fb_ptr = surface_data(surface);
+    pebble_wasm_fb_width = s->num_cols;
+    pebble_wasm_fb_height = s->num_rows;
+    pebble_wasm_fb_stride = surface_stride(surface);
+    pebble_wasm_frame_count++;
+#endif
+
     s->redraw = false;
 }
 
@@ -1006,6 +1070,33 @@ static void ps_display_reset(DeviceState *dev)
 }
 
 
+#ifdef __EMSCRIPTEN__
+/* Timer callback to periodically refresh the display surface in WASM.
+ * With -display none, no display listeners exist, so graphic_hw_update()
+ * is never called. This timer ensures the QEMU surface gets updated so
+ * JavaScript can read the framebuffer via Module._pebble_display_*(). */
+static void ps_display_wasm_refresh_cb(void *opaque)
+{
+    PSDisplayGlobals *s = opaque;
+    pebble_wasm_timer_ticks++;
+    pebble_wasm_redraw_pending = s->redraw;
+    if (s->redraw) {
+        graphic_hw_update(s->con);
+    }
+
+    /* Check CPU state for diagnostics */
+    CPUState *cpu = first_cpu;
+    if (cpu) {
+        pebble_wasm_cpu_halted = cpu->halted;
+        pebble_wasm_cpu_pc = cpu->cc->get_pc(cpu);
+    }
+
+    /* Re-arm: use VIRTUAL clock so icount deadlines wake cpu_exec() */
+    timer_mod(s->wasm_refresh_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 33);
+}
+#endif
+
 // -----------------------------------------------------------------------------
 static void ps_display_realize(SSIPeripheral *dev, Error **errp)
 {
@@ -1052,6 +1143,17 @@ static void ps_display_realize(SSIPeripheral *dev, Error **errp)
     /* This callback informs us that power is on/orr */
     qdev_init_gpio_in_named(DEVICE(dev), ps_display_power_ctl,
                             "power_ctl", 1);
+
+#ifdef __EMSCRIPTEN__
+    /* In WASM builds with -display none, no display change listeners exist,
+     * so graphic_hw_update() is never called and the framebuffer surface
+     * never gets refreshed. Add a periodic timer to drive display updates
+     * so JavaScript can read the framebuffer via the exported functions. */
+    s->wasm_refresh_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                          ps_display_wasm_refresh_cb, s);
+    timer_mod(s->wasm_refresh_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
+#endif
 }
 
 // -----------------------------------------------------------------------------
@@ -1069,7 +1171,7 @@ static const Property ps_display_init_properties[] = {
 
 
 // -----------------------------------------------------------------------------
-static void ps_display_class_init(ObjectClass *klass, void *data)
+static void ps_display_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);

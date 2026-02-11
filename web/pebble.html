@@ -48,8 +48,9 @@
             cursor: pointer;
             font-family: monospace;
             font-size: 14px;
+            user-select: none;
         }
-        #buttons button:active { background: #0f3460; }
+        #buttons button:active, #buttons button.pressed { background: #0f3460; }
         #buttons button:hover { border-color: #888; }
         #console-wrapper {
             width: 600px;
@@ -135,13 +136,19 @@
                 '-serial', 'null',
                 '-serial', 'null',
                 '-serial', 'null',
-                '-d', 'unimp',
+                '-icount', 'shift=auto',
             ],
             print: function(text) {
                 log(text);
             },
             printErr: function(text) {
-                if (text.indexOf('unsupported syscall') >= 0) return;
+                // Filter noisy ARMv7M exception trace messages — these cause
+                // major performance overhead with thousands of DOM updates/sec
+                if (text.indexOf('exception') >= 0) return;
+                if (text.indexOf('Exception') >= 0) return;
+                if (text.indexOf('unsupported') >= 0) return;
+                if (text.indexOf('unimplemented') >= 0) return;
+                if (text.indexOf('...') === 0) return;
                 log('[err] ' + text);
             },
             onRuntimeInitialized: function() {
@@ -195,8 +202,12 @@
 
         loadAndStart();
 
-        // Framebuffer rendering loop — polls QEMU's exported display data
+        // ================================================================
+        // Framebuffer rendering loop
+        // Polls QEMU's exported display data and draws to HTML5 Canvas
+        // ================================================================
         var lastFrameCount = 0;
+        var totalFrames = 0;
         var canvasCtx = document.getElementById('canvas').getContext('2d');
 
         function renderLoop() {
@@ -208,6 +219,7 @@
                 var frameCount = Module._pebble_display_frame_count();
                 if (frameCount === lastFrameCount) return;
                 lastFrameCount = frameCount;
+                totalFrames++;
 
                 var width = Module._pebble_display_width();
                 var height = Module._pebble_display_height();
@@ -215,6 +227,10 @@
                 var dataPtr = Module._pebble_display_data();
 
                 if (!dataPtr || !width || !height) return;
+
+                if (totalFrames === 1) {
+                    setStatus('Display active: ' + width + 'x' + height);
+                }
 
                 var imgData = canvasCtx.createImageData(width, height);
                 var pixels = imgData.data;
@@ -236,6 +252,93 @@
             }
         }
         requestAnimationFrame(renderLoop);
+
+        // ================================================================
+        // Button input
+        // Sends button bitmask to QEMU via exported pebble_set_buttons()
+        // Bit 0=back, 1=up, 2=select, 3=down
+        // ================================================================
+        var buttonState = 0;
+        var BUTTON_BACK   = 1 << 0;
+        var BUTTON_UP     = 1 << 1;
+        var BUTTON_SELECT = 1 << 2;
+        var BUTTON_DOWN   = 1 << 3;
+
+        var keyMap = {
+            'Escape':     BUTTON_BACK,
+            'Backspace':  BUTTON_BACK,
+            'ArrowUp':    BUTTON_UP,
+            'ArrowDown':  BUTTON_DOWN,
+            'Enter':      BUTTON_SELECT,
+            'ArrowRight': BUTTON_SELECT,
+            'ArrowLeft':  BUTTON_BACK,
+            'q':          BUTTON_BACK,
+            'w':          BUTTON_UP,
+            's':          BUTTON_SELECT,
+            'x':          BUTTON_DOWN,
+        };
+
+        function updateButtons(bit, pressed) {
+            if (pressed) {
+                buttonState |= bit;
+            } else {
+                buttonState &= ~bit;
+            }
+            if (runtimeReady && Module._pebble_set_buttons) {
+                Module._pebble_set_buttons(buttonState);
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            var bit = keyMap[e.key];
+            if (bit !== undefined) {
+                e.preventDefault();
+                updateButtons(bit, true);
+            }
+        });
+
+        document.addEventListener('keyup', function(e) {
+            var bit = keyMap[e.key];
+            if (bit !== undefined) {
+                e.preventDefault();
+                updateButtons(bit, false);
+            }
+        });
+
+        // Mouse/touch button support
+        var btnMap = {
+            'btn-back':   BUTTON_BACK,
+            'btn-up':     BUTTON_UP,
+            'btn-select': BUTTON_SELECT,
+            'btn-down':   BUTTON_DOWN,
+        };
+
+        Object.keys(btnMap).forEach(function(id) {
+            var el = document.getElementById(id);
+            var bit = btnMap[id];
+            el.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                el.classList.add('pressed');
+                updateButtons(bit, true);
+            });
+            el.addEventListener('mouseup', function(e) {
+                el.classList.remove('pressed');
+                updateButtons(bit, false);
+            });
+            el.addEventListener('mouseleave', function(e) {
+                el.classList.remove('pressed');
+                updateButtons(bit, false);
+            });
+            el.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                el.classList.add('pressed');
+                updateButtons(bit, true);
+            });
+            el.addEventListener('touchend', function(e) {
+                el.classList.remove('pressed');
+                updateButtons(bit, false);
+            });
+        });
     </script>
 </body>
 </html>

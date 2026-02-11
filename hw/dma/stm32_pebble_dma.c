@@ -27,8 +27,8 @@
 #include "hw/sysbus.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
-#include "exec/address-spaces.h"
-#include "exec/memory.h"
+#include "system/address-spaces.h"
+#include "system/memory.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
 
@@ -415,7 +415,7 @@ f2xx_dma_reset(DeviceState *ds)
 }
 
 static void
-f2xx_dma_class_init(ObjectClass *klass, void *data)
+f2xx_dma_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = f2xx_dma_realize;

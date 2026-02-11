@@ -1225,7 +1225,7 @@ void stm32_rcc_check_periph_clk(Stm32Rcc *rcc, stm32_periph_t periph)
     }
 }
 
-static void stm32_rcc_class_init(ObjectClass *klass, void *data)
+static void stm32_rcc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

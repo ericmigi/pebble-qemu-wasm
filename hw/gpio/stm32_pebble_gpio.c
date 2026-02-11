@@ -264,7 +264,7 @@ static const Property stm32f2xx_gpio_properties[] = {
 };
 
 static void
-stm32f2xx_gpio_class_init(ObjectClass *klass, void *data)
+stm32f2xx_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

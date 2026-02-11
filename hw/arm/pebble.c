@@ -210,6 +210,33 @@ void pebble_set_button_state(uint32_t button_state)
     }
 }
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+/* Shared button state for JavaScript → QEMU communication.
+ * JavaScript writes button bitmask, QEMU timer reads and applies it.
+ * Bit 0=back, 1=up, 2=select, 3=down. */
+static volatile uint32_t pebble_wasm_button_state = 0;
+static volatile uint32_t pebble_wasm_last_button_state = 0;
+static QEMUTimer *pebble_wasm_button_timer;
+
+EMSCRIPTEN_KEEPALIVE void pebble_set_buttons(uint32_t state)
+{
+    pebble_wasm_button_state = state;
+}
+
+static void pebble_wasm_button_poll(void *opaque)
+{
+    uint32_t state = pebble_wasm_button_state;
+    if (state != pebble_wasm_last_button_state) {
+        pebble_set_button_state(state);
+        pebble_wasm_last_button_state = state;
+    }
+    timer_mod(pebble_wasm_button_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 16);
+}
+#endif
+
 /* ====================================================================
  * UART connections
  * ==================================================================== */
@@ -250,6 +277,14 @@ void pebble_init_buttons(Stm32Gpio *gpio[], const PblButtonMap *map)
     QemuInputHandlerState *ihs =
         qemu_input_handler_register(NULL, &pebble_keyboard_handler);
     qemu_input_handler_activate(ihs);
+
+#ifdef __EMSCRIPTEN__
+    /* Start polling timer for WASM button input */
+    pebble_wasm_button_timer = timer_new_ms(QEMU_CLOCK_REALTIME,
+                                             pebble_wasm_button_poll, NULL);
+    timer_mod(pebble_wasm_button_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 100);
+#endif
 }
 
 /* ====================================================================
@@ -277,7 +312,7 @@ static void pebble_board_realize(DeviceState *dev, Error **errp)
                             "pebble_board_vibe_in", 1);
 }
 
-static void pebble_board_class_init(ObjectClass *klass, void *data)
+static void pebble_board_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = pebble_board_realize;
