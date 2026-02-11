@@ -1,6 +1,7 @@
-# WASM build output (too large for git)
-qemu-system-arm.wasm
-qemu-system-arm.js
-qemu-system-arm.worker.js
-qemu_micro_flash.bin
-qemu_spi_flash.bin
+# WASM build output — large but needed for GitHub Pages
+# Uncomment to exclude from git:
+# qemu-system-arm.wasm
+# qemu-system-arm.js
+# qemu-system-arm.worker.js
+# qemu_micro_flash.bin
+# qemu_spi_flash.bin
