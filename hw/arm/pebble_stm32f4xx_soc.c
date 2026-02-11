@@ -16,7 +16,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "system/address-spaces.h"
+#include "exec/address-spaces.h"
 #include "hw/arm/armv7m.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/stm32_common.h"
