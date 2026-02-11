@@ -2,7 +2,11 @@
 # Boot Pebble QEMU 10.x with TCP serial ports for pebble-tool connectivity
 #
 # Usage:
-#   bash boot_for_pebble_tool.sh
+#   bash boot_for_pebble_tool.sh [--sdk|--full]
+#
+# Firmware options:
+#   --full  Full PebbleOS firmware (default)
+#   --sdk   SDK PebbleOS firmware (from Pebble SDK 4.9.77)
 #
 # Then connect pebble-tool:
 #   pebble install --qemu localhost:12344 /path/to/app.pbw
@@ -17,7 +21,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QEMU="${SCRIPT_DIR}/../qemu-10.0/build/qemu-system-arm"
-FW_DIR="${SCRIPT_DIR}/firmware"
+
+# Parse firmware selection (default: full)
+FW_VARIANT="full"
+for arg in "$@"; do
+    case "$arg" in
+        --sdk) FW_VARIANT="sdk" ;;
+        --full) FW_VARIANT="full" ;;
+        *) echo "Unknown option: $arg"; echo "Usage: $0 [--sdk|--full]"; exit 1 ;;
+    esac
+done
+
+FW_DIR="${SCRIPT_DIR}/firmware/${FW_VARIANT}"
+
+if [ ! -f "${FW_DIR}/qemu_micro_flash.bin" ]; then
+    echo "Error: Firmware not found at ${FW_DIR}/"
+    echo "Expected: qemu_micro_flash.bin and qemu_spi_flash.bin"
+    exit 1
+fi
 
 PEBBLE_PORT="${PEBBLE_QEMU_PORT:-12344}"
 DEBUG_PORT="${PEBBLE_QEMU_DEBUG_PORT:-12345}"
@@ -31,6 +52,7 @@ cleanup() {
 }
 
 echo "=== Starting Pebble QEMU 10.x (emery) with TCP serial ==="
+echo "  Firmware:       ${FW_VARIANT} PebbleOS"
 echo "  Pebble control: tcp://localhost:${PEBBLE_PORT}"
 echo "  Debug serial:   tcp://localhost:${DEBUG_PORT}"
 echo "  Press Ctrl-C to stop"

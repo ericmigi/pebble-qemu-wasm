@@ -79,11 +79,38 @@
             color: #666;
             margin-top: 5px;
         }
+        #controls {
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        #controls select, #controls button {
+            background: #16213e;
+            color: #e0e0e0;
+            border: 1px solid #444;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        #controls select { padding: 4px 8px; }
+        #controls button { padding: 4px 12px; cursor: pointer; }
+        #controls button:hover { border-color: #888; }
+        #controls button:disabled { opacity: 0.5; cursor: default; }
     </style>
 </head>
 <body>
     <h1>Pebble Emulator</h1>
-    <div id="status">Loading...</div>
+    <div id="controls">
+        <label for="fw-select">Firmware:</label>
+        <select id="fw-select">
+            <option value="sdk" selected>SDK PebbleOS</option>
+            <option value="full">Full PebbleOS</option>
+        </select>
+        <button id="btn-boot">Boot</button>
+    </div>
+    <div id="status">Select firmware and click Boot</div>
 
     <div id="display-wrapper">
         <!-- Emery: 200x228, CSS scaled 2x -->
@@ -104,8 +131,10 @@
     </div>
 
     <script>
-        const statusEl = document.getElementById('status');
-        const consoleEl = document.getElementById('console');
+        var statusEl = document.getElementById('status');
+        var consoleEl = document.getElementById('console');
+        var bootBtn = document.getElementById('btn-boot');
+        var fwSelect = document.getElementById('fw-select');
 
         function log(msg) {
             consoleEl.textContent += msg + '\n';
@@ -162,32 +191,37 @@
             preRun: [],
         };
 
-        // Load firmware files, then inject QEMU module
-        async function loadAndStart() {
+        bootBtn.addEventListener('click', function() {
+            bootBtn.disabled = true;
+            fwSelect.disabled = true;
+            bootEmulator();
+        });
+
+        async function bootEmulator() {
+            var variant = fwSelect.value;
+            var fwBase = 'firmware/' + variant + '/';
+
             try {
-                setStatus('Fetching micro flash (827KB)...');
-                const microResp = await fetch('qemu_micro_flash.bin');
+                setStatus('Fetching micro flash (' + variant + ')...');
+                var microResp = await fetch(fwBase + 'qemu_micro_flash.bin');
                 if (!microResp.ok) throw new Error('micro flash: ' + microResp.status);
-                const microData = new Uint8Array(await microResp.arrayBuffer());
+                var microData = new Uint8Array(await microResp.arrayBuffer());
                 log('Downloaded micro flash: ' + microData.length + ' bytes');
 
                 setStatus('Fetching SPI flash (16MB)...');
-                const spiResp = await fetch('qemu_spi_flash.bin');
+                var spiResp = await fetch(fwBase + 'qemu_spi_flash.bin');
                 if (!spiResp.ok) throw new Error('SPI flash: ' + spiResp.status);
-                const spiData = new Uint8Array(await spiResp.arrayBuffer());
+                var spiData = new Uint8Array(await spiResp.arrayBuffer());
                 log('Downloaded SPI flash: ' + spiData.length + ' bytes');
 
-                // Add preRun hook to write firmware into Emscripten FS
                 Module.preRun.push(function() {
-                    try {
-                        FS.mkdir('/firmware');
-                    } catch(e) {}
+                    try { FS.mkdir('/firmware'); } catch(e) {}
                     FS.writeFile('/firmware/qemu_micro_flash.bin', microData);
                     FS.writeFile('/firmware/qemu_spi_flash.bin', spiData);
-                    log('Firmware written to virtual filesystem');
+                    log('Firmware written to virtual filesystem (' + variant + ')');
                 });
 
-                setStatus('Loading QEMU WASM module (34MB)...');
+                setStatus('Loading QEMU WASM module (33MB)...');
                 var script = document.createElement('script');
                 script.src = 'qemu-system-arm.js';
                 script.onerror = function() {
@@ -198,10 +232,10 @@
             } catch(e) {
                 setStatus('Error: ' + e.message);
                 log(e.stack || e.toString());
+                bootBtn.disabled = false;
+                fwSelect.disabled = false;
             }
         }
-
-        loadAndStart();
 
         // ================================================================
         // Framebuffer rendering loop
