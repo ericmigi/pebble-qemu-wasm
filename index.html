@@ -115,10 +115,28 @@
         #controls button { padding: 4px 12px; cursor: pointer; }
         #controls button:hover { border-color: #888; }
         #controls button:disabled { opacity: 0.5; cursor: default; }
+        #btn-boot {
+            background: linear-gradient(135deg, #ff6b35, #e91e63, #9c27b0) !important;
+            color: #fff !important;
+            border: none !important;
+            padding: 6px 18px !important;
+            font-size: 15px !important;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+            box-shadow: 0 2px 8px rgba(233, 30, 99, 0.4);
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        #btn-boot:hover:not(:disabled) {
+            transform: scale(1.05);
+            box-shadow: 0 4px 14px rgba(233, 30, 99, 0.6);
+        }
+        #btn-boot:active:not(:disabled) { transform: scale(0.97); }
+        #btn-boot:disabled { opacity: 0.5; filter: grayscale(0.4); }
     </style>
 </head>
 <body>
     <h1>Pebble Emulator</h1>
+    <p style="color: #999; font-size: 13px; margin: -5px 0 12px 0; max-width: 600px; line-height: 1.5;">Runs entirely in your browser — no server, no install. QEMU is compiled to WebAssembly, emulating the original Pebble ARM hardware and booting real PebbleOS firmware.</p>
     <div id="controls">
         <label for="fw-select">Firmware:</label>
         <select id="fw-select">
@@ -126,6 +144,7 @@
             <option value="sdk">SDK PebbleOS</option>
         </select>
         <button id="btn-boot">Boot</button>
+        <span style="font-size: 12px; color: #888; margin-left: 8px;">May take 2-4 mins to boot</span>
     </div>
     <div id="status">Select firmware and click Boot</div>
     <div id="progress-bar"><div id="progress-fill"></div></div>
