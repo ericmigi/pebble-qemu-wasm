@@ -463,20 +463,34 @@ void stm32f4xx_init(
     stm32_init_periph(crc, STM32_CRC, 0x40023000, NULL);
 
     /* === DMA === */
+    /* Note: DMA stream IRQs are NOT contiguous on STM32F4xx.
+     * DMA1: streams 0-6 are IRQs 11-17, but stream 7 is IRQ 47.
+     * DMA2: streams 0-4 are IRQs 56-60, but streams 5-7 are IRQs 68-70.
+     */
+    static const uint8_t dma1_irqs[8] = {
+        STM32_DMA1_STREAM0_IRQ, STM32_DMA1_STREAM1_IRQ,
+        STM32_DMA1_STREAM2_IRQ, STM32_DMA1_STREAM3_IRQ,
+        STM32_DMA1_STREAM4_IRQ, STM32_DMA1_STREAM5_IRQ,
+        STM32_DMA1_STREAM6_IRQ, STM32_DMA1_STREAM7_IRQ,
+    };
     DeviceState *dma1 = qdev_new("f2xx_dma");
     stm32_init_periph(dma1, STM32_DMA1, 0x40026000, NULL);
     for (i = 0; i < 8; i++) {
         sysbus_connect_irq(SYS_BUS_DEVICE(dma1), i,
-                           qdev_get_gpio_in(armv7m_dev,
-                                            STM32_DMA1_STREAM0_IRQ + i));
+                           qdev_get_gpio_in(armv7m_dev, dma1_irqs[i]));
     }
 
+    static const uint8_t dma2_irqs[8] = {
+        STM32_DMA2_STREAM0_IRQ, STM32_DMA2_STREAM1_IRQ,
+        STM32_DMA2_STREAM2_IRQ, STM32_DMA2_STREAM3_IRQ,
+        STM32_DMA2_STREAM4_IRQ, STM32_DMA2_STREAM5_IRQ,
+        STM32_DMA2_STREAM6_IRQ, STM32_DMA2_STREAM7_IRQ,
+    };
     DeviceState *dma2 = qdev_new("f2xx_dma");
     stm32_init_periph(dma2, STM32_DMA2, 0x40026400, NULL);
     for (i = 0; i < 8; i++) {
         sysbus_connect_irq(SYS_BUS_DEVICE(dma2), i,
-                           qdev_get_gpio_in(armv7m_dev,
-                                            STM32_DMA2_STREAM0_IRQ + i));
+                           qdev_get_gpio_in(armv7m_dev, dma2_irqs[i]));
     }
 
     /* === External SDRAM at 0xC0000000 (8MB for Emery framebuffer) === */

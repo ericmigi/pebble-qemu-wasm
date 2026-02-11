@@ -28,6 +28,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "exec/address-spaces.h"
+#include "exec/memory.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
 
@@ -197,8 +198,8 @@ f2xx_dma_stream_start(f2xx_dma_stream *s, int stream_no)
     int msize = msize_table[(s->cr >> 13) & 0x3];
     int dir = (s->cr >> 6) & 0x3;
 
-    DPRINTF("stream %d start ndtr=%d par=0x%08x m0ar=0x%08x dir=%d msize=%d\n",
-            stream_no, s->ndtr, s->par, s->m0ar, dir, msize);
+    DPRINTF("stream %d start ndtr=%d par=0x%08x m0ar=0x%08x dir=%d msize=%d cr=0x%08x\n",
+            stream_no, s->ndtr, s->par, s->m0ar, dir, msize, s->cr);
 
     if (msize == 0) {
         qemu_log_mask(LOG_GUEST_ERROR, "f2xx dma: invalid MSIZE\n");
@@ -210,22 +211,29 @@ f2xx_dma_stream_start(f2xx_dma_stream *s, int stream_no)
         return;
     }
 
-    /* XXX hack do the entire transfer here for now. */
+    /* Transfer data between memory and peripherals.
+     * Use address_space_write/read to ensure MMIO handlers are dispatched. */
     while (s->ndtr--) {
         switch (dir) {
         case 0: /* Peripheral to memory */
-            cpu_physical_memory_read(s->par, buf, msize);
-            cpu_physical_memory_write(s->m0ar, buf, msize);
+            address_space_read(&address_space_memory, s->par,
+                              MEMTXATTRS_UNSPECIFIED, buf, msize);
+            address_space_write(&address_space_memory, s->m0ar,
+                               MEMTXATTRS_UNSPECIFIED, buf, msize);
             s->m0ar += msize;
             break;
         case 1: /* Memory to peripheral */
-            cpu_physical_memory_read(s->m0ar, buf, msize);
-            cpu_physical_memory_write(s->par, buf, msize);
+            address_space_read(&address_space_memory, s->m0ar,
+                              MEMTXATTRS_UNSPECIFIED, buf, msize);
+            address_space_write(&address_space_memory, s->par,
+                               MEMTXATTRS_UNSPECIFIED, buf, msize);
             s->m0ar += msize;
             break;
         case 2: /* Memory to memory */
-            cpu_physical_memory_read(s->par, buf, msize);
-            cpu_physical_memory_write(s->m0ar, buf, msize);
+            address_space_read(&address_space_memory, s->par,
+                              MEMTXATTRS_UNSPECIFIED, buf, msize);
+            address_space_write(&address_space_memory, s->m0ar,
+                               MEMTXATTRS_UNSPECIFIED, buf, msize);
             s->m0ar += msize;
             break;
         default:
@@ -236,7 +244,7 @@ f2xx_dma_stream_start(f2xx_dma_stream *s, int stream_no)
     /* Transfer complete. */
     s->cr &= ~R_DMA_SxCR_EN;
     s->isr |= R_DMA_ISR_TCIF;
-    DPRINTF("stream %d TC, firing IRQ\n", stream_no);
+    DPRINTF("stream %d TC, isr=0x%02x\n", stream_no, s->isr);
     qemu_set_irq(s->irq, 1);
 }
 
@@ -246,7 +254,6 @@ f2xx_dma_stream_write(f2xx_dma_stream *s, int stream_no, uint32_t addr, uint32_t
 {
     switch (addr) {
     case R_DMA_SxCR:
-        DPRINTF("%s: stream: %d, register CR, data:0x%x\n", __func__, stream_no, data);
         if ((s->cr & R_DMA_SxCR_EN) == 0 && (data & R_DMA_SxCR_EN) != 0) {
             s->cr = data;
             f2xx_dma_stream_start(s, stream_no);
