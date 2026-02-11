@@ -133,14 +133,33 @@ typedef struct f2xx_i2c {
  * an interrupt-related flag is updated.
  */
 static void f2xx_i2c_update_irq(f2xx_i2c *s) {
-    /*
-     * I2C interrupts disabled: the firmware's I2C ISR handlers are minimal
-     * stubs that don't clear the interrupt flags, causing an interrupt storm
-     * that starves the CPU. I2C is used for sensors (accel, compass) which
-     * aren't needed for display/UI boot. Register reads/writes still work
-     * for polling-based access.
-     */
-    (void)s;
+    int evt_level = 0;
+    int err_level = 0;
+
+    if (s->regs[R_I2C_CR2] & R_I2C_CR2_ITEVTEN_BIT) {
+        /* Event interrupt: SB, ADDR, ADD10, STOPF, BTF */
+        if (s->regs[R_I2C_SR1] & (R_I2C_SR1_SB_BIT | R_I2C_SR1_ADDR_BIT |
+                                    R_I2C_SR1_ADD10_BIT | R_I2C_SR1_STOPF_BIT |
+                                    R_I2C_SR1_BTF_BIT)) {
+            evt_level = 1;
+        }
+        /* Buffer interrupt: TxE, RxNE (only if ITBUFEN enabled) */
+        if (s->regs[R_I2C_CR2] & R_I2C_CR2_ITBUFEN_BIT) {
+            if (s->regs[R_I2C_SR1] & (R_I2C_SR1_TxE_BIT | R_I2C_SR1_RxNE_BIT)) {
+                evt_level = 1;
+            }
+        }
+    }
+
+    if (s->regs[R_I2C_CR2] & R_I2C_CR2_ITERREN_BIT) {
+        if (s->regs[R_I2C_SR1] & (R_I2C_SR1_BERR_BIT | R_I2C_SR1_ARLO_BIT |
+                                    R_I2C_SR1_AF_BIT | R_I2C_SR1_OVR_BIT)) {
+            err_level = 1;
+        }
+    }
+
+    qemu_set_irq(s->evt_irq, evt_level);
+    qemu_set_irq(s->err_irq, err_level);
 }
 
 
@@ -211,9 +230,12 @@ f2xx_i2c_write(void *arg, hwaddr offset, uint64_t data, unsigned size)
     case R_I2C_CR1:
         s->regs[offset] = data;
         if (data & R_I2C_CR1_START_BIT) {
-            /* START condition generated → set SB flag, enter master mode */
-            s->regs[R_I2C_SR1] |= R_I2C_SR1_SB_BIT;
-            s->regs[R_I2C_SR2] |= R_I2C_SR2_MSL_BIT | R_I2C_SR2_BUSY_BIT;
+            /* Match QEMU 2.5 behavior: immediately fail with bus error.
+             * No I2C slave devices are emulated, so any transfer would NACK.
+             * Setting BERR lets the firmware error ISR handle it instantly
+             * instead of going through the full SB→address→AF chain that
+             * causes ~3s timeout per probe. */
+            s->regs[R_I2C_SR1] |= R_I2C_SR1_BERR_BIT;
             s->regs[offset] &= ~R_I2C_CR1_START_BIT;
         }
         if (data & R_I2C_CR1_STOP_BIT) {
@@ -239,6 +261,8 @@ f2xx_i2c_write(void *arg, hwaddr offset, uint64_t data, unsigned size)
             if (i2c_start_transfer(s->bus, addr, is_recv)) {
                 /* NACK → no slave at this address */
                 s->regs[R_I2C_SR1] |= R_I2C_SR1_AF_BIT;
+                s->regs[R_I2C_SR2] &= ~(R_I2C_SR2_MSL_BIT |
+                                          R_I2C_SR2_BUSY_BIT);
             } else {
                 /* ACK → slave responded, address phase complete */
                 s->regs[R_I2C_SR1] |= R_I2C_SR1_ADDR_BIT | R_I2C_SR1_TxE_BIT;
