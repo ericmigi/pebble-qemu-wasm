@@ -6,7 +6,7 @@ import socketserver
 import sys
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-DIRECTORY = sys.argv[2] if len(sys.argv) > 2 else "web"
+DIRECTORY = sys.argv[2] if len(sys.argv) > 2 else "."
 
 
 class COOPCOEPHandler(http.server.SimpleHTTPRequestHandler):
