@@ -157,8 +157,14 @@
         var bootBtn = document.getElementById('btn-boot');
         var fwSelect = document.getElementById('fw-select');
 
+        function ts() {
+            var d = new Date();
+            return d.toTimeString().slice(0, 8) + '.' +
+                   String(d.getMilliseconds()).padStart(3, '0');
+        }
+
         function log(msg) {
-            consoleEl.textContent += msg + '\n';
+            consoleEl.textContent += ts() + ' ' + msg + '\n';
             if (consoleEl.textContent.length > 100000) {
                 consoleEl.textContent = consoleEl.textContent.slice(-50000);
             }
@@ -210,6 +216,81 @@
             return data;
         }
 
+        // QEMU stderr noise filter — ported from boot_with_logs.sh
+        var QEMU_NOISE = [
+            'write 0x', 'read 0x',             // register access spam
+            'DMA:', 'dma:',                     // DMA transfer details
+            'unimp',                            // unimplemented stubs
+            'guest_errors',                     // harmless guest errors
+            'CPU AS read', 'CPU AS write',      // CPU address space reads
+            'DEBUG: CPU AS',                    // CPU address space debug
+            'CS changed to',                    // display chip-select toggles
+            'cmd=', 'cmd_set=',                 // display command details
+            'ps_display_execute_current_cmd',   // display command dispatch
+            'state change from',                // display state machine transitions
+            'Frame data start',                 // frame data start
+            'Asserting done interrupt',         // display interrupt
+            'Resetting state to accept',        // display state reset
+            'received scene ID',                // scene details
+            'pebble_control_write: bytes:',     // control protocol hex dumps
+            'pebble_control_write: qemu_chr',   // control write confirmations
+            'exception', 'Exception',           // ARMv7M exception traces
+            'unsupported',                      // unsupported feature warnings
+            'Not implemented',                  // unimplemented stubs
+        ];
+
+        var DISPLAY_SHOW = [
+            'Executing command:',
+            'Exiting programming mode',
+            'determine_command_set:',
+            'Got last byte in frame',
+        ];
+
+        function matchesAny(text, patterns) {
+            for (var i = 0; i < patterns.length; i++) {
+                if (text.indexOf(patterns[i]) >= 0) return true;
+            }
+            return false;
+        }
+
+        function filterAndLog(text) {
+            if (!text || text.indexOf('...') === 0) return;
+
+            // Condense frame renders
+            if (text.indexOf('Got last byte in frame') >= 0) {
+                var bi = text.indexOf('bytes:');
+                if (bi >= 0) {
+                    log('Display: frame rendered (' + text.slice(bi + 6).trim() + ' total bytes)');
+                }
+                return;
+            }
+
+            // Display events — show meaningful ones, drop noise
+            if (text.indexOf('PEBBLE_SNOWY_DISPLAY:') >= 0) {
+                if (matchesAny(text, DISPLAY_SHOW)) {
+                    log(text.replace('PEBBLE_SNOWY_DISPLAY: ', 'Display: '));
+                } else if (!matchesAny(text, QEMU_NOISE)) {
+                    log(text);
+                }
+                return;
+            }
+
+            // Control events — show packet sends, drop noise
+            if (text.indexOf('PEBBLE_CONTROL:') >= 0) {
+                if (text.indexOf('Sending packet') >= 0) {
+                    log(text.replace('PEBBLE_CONTROL: pebble_control_write: ', 'Control: '));
+                } else if (!matchesAny(text, QEMU_NOISE)) {
+                    log(text);
+                }
+                return;
+            }
+
+            // General noise filter
+            if (matchesAny(text, QEMU_NOISE)) return;
+
+            log('[err] ' + text);
+        }
+
         var runtimeReady = false;
 
         var Module = {
@@ -224,20 +305,14 @@
                 '-drive', 'if=none,id=spi-flash,file=/firmware/qemu_spi_flash.bin,format=raw',
                 '-serial', 'null',
                 '-serial', 'null',
-                '-serial', 'null',
+                '-serial', 'file:/tmp/pebble_serial.log',
                 '-icount', 'shift=auto',
             ],
             print: function(text) {
                 log(text);
             },
             printErr: function(text) {
-                if (text.indexOf('exception') >= 0) return;
-                if (text.indexOf('Exception') >= 0) return;
-                if (text.indexOf('unsupported') >= 0) return;
-                if (text.indexOf('unimplemented') >= 0) return;
-                if (text.indexOf('Not implemented') >= 0) return;
-                if (text.indexOf('...') === 0) return;
-                log('[err] ' + text);
+                filterAndLog(text);
             },
             onRuntimeInitialized: function() {
                 setStatus('QEMU runtime initialized, booting Pebble firmware...');
@@ -274,6 +349,7 @@
 
                 Module.preRun.push(function() {
                     try { FS.mkdir('/firmware'); } catch(e) {}
+                    try { FS.mkdir('/tmp'); } catch(e) {}
                     FS.writeFile('/firmware/qemu_micro_flash.bin', microData);
                     FS.writeFile('/firmware/qemu_spi_flash.bin', spiData);
                     log('Firmware written to virtual filesystem (' + variant + ')');
@@ -338,6 +414,102 @@
             } catch(e) {}
         }
         setInterval(renderLoop, 50);
+
+        // ================================================================
+        // Firmware serial log parser (UART protocol from serial2)
+        // Ported from boot_with_logs.sh process_serial()
+        // ================================================================
+        var serialReadPos = 0;
+        var serialBuf = new Uint8Array(0);
+        var SYNC = [0x03, 0x50, 0x21];
+        var MARKER = [0x2a, 0x2a];
+
+        function findBytes(buf, pattern, start) {
+            for (var i = start; i <= buf.length - pattern.length; i++) {
+                var match = true;
+                for (var j = 0; j < pattern.length; j++) {
+                    if (buf[i + j] !== pattern[j]) { match = false; break; }
+                }
+                if (match) return i;
+            }
+            return -1;
+        }
+
+        function parseSerialFrames() {
+            while (true) {
+                var idx = findBytes(serialBuf, SYNC, 0);
+                if (idx < 0) {
+                    if (serialBuf.length > 512) {
+                        serialBuf = serialBuf.slice(serialBuf.length - 512);
+                    }
+                    break;
+                }
+
+                var star = findBytes(serialBuf, MARKER, idx);
+                if (star < 0) break;
+
+                // Skip \x01 padding after **
+                var pos = star + 2;
+                while (pos < serialBuf.length && serialBuf[pos] === 0x01) pos++;
+                if (pos >= serialBuf.length) break;
+
+                // Find next sync (end of this frame)
+                var nextSync = findBytes(serialBuf, SYNC, pos);
+                if (nextSync < 0) {
+                    if (serialBuf.length - pos > 4096) {
+                        serialBuf = serialBuf.slice(pos);
+                    }
+                    break;
+                }
+
+                // Strip trailing padding
+                var end = nextSync;
+                while (end > pos && serialBuf[end - 1] === 0x55) end--;
+                if (end - pos >= 4) end -= 3;
+
+                // Extract printable text from payload
+                var text = '';
+                for (var i = pos; i < end; i++) {
+                    var b = serialBuf[i];
+                    if ((b >= 32 && b <= 126) || b === 9 || b === 10 || b === 13) {
+                        text += String.fromCharCode(b);
+                    }
+                }
+                text = text.trim();
+
+                serialBuf = serialBuf.slice(nextSync);
+
+                if (text.length >= 2) {
+                    log('FIRM | ' + text);
+                }
+            }
+        }
+
+        function pollSerialLog() {
+            if (!runtimeReady) return;
+            try {
+                var stat = FS.stat('/tmp/pebble_serial.log');
+                if (stat.size <= serialReadPos) return;
+
+                var stream = FS.open('/tmp/pebble_serial.log', 'r');
+                var newBytes = stat.size - serialReadPos;
+                var chunk = new Uint8Array(newBytes);
+                FS.read(stream, chunk, 0, newBytes, serialReadPos);
+                FS.close(stream);
+                serialReadPos = stat.size;
+
+                // Append to parse buffer
+                var combined = new Uint8Array(serialBuf.length + chunk.length);
+                combined.set(serialBuf);
+                combined.set(chunk, serialBuf.length);
+                serialBuf = combined;
+
+                parseSerialFrames();
+            } catch(e) {
+                // File doesn't exist yet during early boot
+            }
+        }
+        setInterval(pollSerialLog, 200);
 
         // ================================================================
         // Button input
