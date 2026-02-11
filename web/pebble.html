@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Pebble Emulator (QEMU WASM)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        h1 { margin-bottom: 10px; font-size: 18px; }
+        #status {
+            margin-bottom: 10px;
+            padding: 5px 10px;
+            background: #16213e;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        #display-wrapper {
+            position: relative;
+            margin-bottom: 15px;
+        }
+        canvas#canvas {
+            image-rendering: pixelated;
+            border: 2px solid #333;
+            border-radius: 8px;
+            width: 400px;
+            height: 456px;
+        }
+        #buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        #buttons button {
+            padding: 8px 16px;
+            background: #16213e;
+            color: #e0e0e0;
+            border: 1px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        #buttons button:active { background: #0f3460; }
+        #buttons button:hover { border-color: #888; }
+        #console-wrapper {
+            width: 600px;
+            max-height: 300px;
+        }
+        #console-wrapper h3 {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 5px;
+        }
+        #console {
+            width: 100%;
+            height: 250px;
+            background: #0a0a0a;
+            color: #0f0;
+            font-size: 12px;
+            padding: 8px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .key-hint {
+            font-size: 11px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Pebble Emulator</h1>
+    <div id="status">Loading...</div>
+
+    <div id="display-wrapper">
+        <!-- Emery: 200x228, CSS scaled 2x -->
+        <canvas id="canvas" width="200" height="228"></canvas>
+    </div>
+
+    <div id="buttons">
+        <button id="btn-back" title="Back (Escape)">Back</button>
+        <button id="btn-up" title="Up (Arrow Up)">Up</button>
+        <button id="btn-select" title="Select (Enter)">Select</button>
+        <button id="btn-down" title="Down (Arrow Down)">Down</button>
+    </div>
+    <div class="key-hint">Keys: Escape=Back, Up/Down=Navigate, Enter=Select</div>
+
+    <div id="console-wrapper">
+        <h3>Serial Console</h3>
+        <div id="console"></div>
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const consoleEl = document.getElementById('console');
+
+        function log(msg) {
+            consoleEl.textContent += msg + '\n';
+            if (consoleEl.textContent.length > 100000) {
+                consoleEl.textContent = consoleEl.textContent.slice(-50000);
+            }
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        function setStatus(msg) {
+            statusEl.textContent = msg;
+            log('[status] ' + msg);
+        }
+
+        var runtimeReady = false;
+
+        // Emscripten Module configuration — defined BEFORE loading the .js
+        var Module = {
+            canvas: document.getElementById('canvas'),
+            noInitialRun: false,
+            arguments: [
+                '-machine', 'pebble-snowy-emery-bb',
+                '-display', 'none',
+                '-monitor', 'none',
+                '-parallel', 'none',
+                '-kernel', '/firmware/qemu_micro_flash.bin',
+                '-drive', 'if=none,id=spi-flash,file=/firmware/qemu_spi_flash.bin,format=raw',
+                '-serial', 'null',
+                '-serial', 'null',
+                '-serial', 'null',
+                '-d', 'unimp',
+            ],
+            print: function(text) {
+                log(text);
+            },
+            printErr: function(text) {
+                if (text.indexOf('unsupported syscall') >= 0) return;
+                log('[err] ' + text);
+            },
+            onRuntimeInitialized: function() {
+                setStatus('QEMU runtime initialized, booting Pebble firmware...');
+                runtimeReady = true;
+            },
+            locateFile: function(path) {
+                return path;
+            },
+            preRun: [],
+        };
+
+        // Load firmware files, then inject QEMU module
+        async function loadAndStart() {
+            try {
+                setStatus('Fetching micro flash (827KB)...');
+                const microResp = await fetch('qemu_micro_flash.bin');
+                if (!microResp.ok) throw new Error('micro flash: ' + microResp.status);
+                const microData = new Uint8Array(await microResp.arrayBuffer());
+                log('Downloaded micro flash: ' + microData.length + ' bytes');
+
+                setStatus('Fetching SPI flash (16MB)...');
+                const spiResp = await fetch('qemu_spi_flash.bin');
+                if (!spiResp.ok) throw new Error('SPI flash: ' + spiResp.status);
+                const spiData = new Uint8Array(await spiResp.arrayBuffer());
+                log('Downloaded SPI flash: ' + spiData.length + ' bytes');
+
+                // Add preRun hook to write firmware into Emscripten FS
+                Module.preRun.push(function() {
+                    try {
+                        FS.mkdir('/firmware');
+                    } catch(e) {}
+                    FS.writeFile('/firmware/qemu_micro_flash.bin', microData);
+                    FS.writeFile('/firmware/qemu_spi_flash.bin', spiData);
+                    log('Firmware written to virtual filesystem');
+                });
+
+                setStatus('Loading QEMU WASM module (34MB)...');
+                var script = document.createElement('script');
+                script.src = 'qemu-system-arm.js';
+                script.onerror = function() {
+                    setStatus('Failed to load qemu-system-arm.js');
+                };
+                document.body.appendChild(script);
+
+            } catch(e) {
+                setStatus('Error: ' + e.message);
+                log(e.stack || e.toString());
+            }
+        }
+
+        loadAndStart();
+
+        // Framebuffer rendering loop — polls QEMU's exported display data
+        var lastFrameCount = 0;
+        var canvasCtx = document.getElementById('canvas').getContext('2d');
+
+        function renderLoop() {
+            requestAnimationFrame(renderLoop);
+
+            if (!runtimeReady) return;
+
+            try {
+                var frameCount = Module._pebble_display_frame_count();
+                if (frameCount === lastFrameCount) return;
+                lastFrameCount = frameCount;
+
+                var width = Module._pebble_display_width();
+                var height = Module._pebble_display_height();
+                var stride = Module._pebble_display_stride();
+                var dataPtr = Module._pebble_display_data();
+
+                if (!dataPtr || !width || !height) return;
+
+                var imgData = canvasCtx.createImageData(width, height);
+                var pixels = imgData.data;
+
+                for (var y = 0; y < height; y++) {
+                    for (var x = 0; x < width; x++) {
+                        var srcOff = dataPtr + y * stride + x * 4;
+                        var dstOff = (y * width + x) * 4;
+                        // QEMU DisplaySurface: BGRX (32bpp, blue in byte 0)
+                        pixels[dstOff + 0] = Module.HEAPU8[srcOff + 2]; // R
+                        pixels[dstOff + 1] = Module.HEAPU8[srcOff + 1]; // G
+                        pixels[dstOff + 2] = Module.HEAPU8[srcOff + 0]; // B
+                        pixels[dstOff + 3] = 255;                       // A
+                    }
+                }
+                canvasCtx.putImageData(imgData, 0, 0);
+            } catch(e) {
+                // Ignore errors during early boot
+            }
+        }
+        requestAnimationFrame(renderLoop);
+    </script>
+</body>
+</html>

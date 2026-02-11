@@ -1,12 +1,12 @@
 #!/bin/bash
 # Build Pebble QEMU for WebAssembly using Emscripten (via Docker)
-# Uses QEMU 10.1 with native WASM support + Pebble device model overlay
+# Uses QEMU 10.1 with native WASM/TCI support + Pebble device model overlay
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-QEMU_SRC="/Users/eric/dev/qemu-10.1.0"
-DOCKER_IMAGE="qemu-wasm-base"
-CONTAINER_NAME="build-qemu-wasm"
+QEMU_SRC="${QEMU_SRC:-/Users/eric/dev/qemu-10.1.0}"
+DOCKER_IMAGE="qemu101-wasm-base"
+CONTAINER_NAME="build-pebble-wasm"
 WEB_DIR="${SCRIPT_DIR}/web"
 
 if [ ! -d "${QEMU_SRC}" ]; then
@@ -23,36 +23,56 @@ if ! docker image inspect "${DOCKER_IMAGE}" &>/dev/null; then
     exit 1
 fi
 
-echo "=== Overlaying Pebble files onto QEMU 10.1 ==="
+echo "=== Starting WASM build container ==="
 
-# Copy include files
-mkdir -p "${QEMU_SRC}/include/hw/arm"
-cp "${SCRIPT_DIR}/include/hw/arm/stm32_common.h" "${QEMU_SRC}/include/hw/arm/"
-cp "${SCRIPT_DIR}/include/hw/arm/pebble.h" "${QEMU_SRC}/include/hw/arm/"
-cp "${SCRIPT_DIR}/include/hw/arm/stm32_clktree.h" "${QEMU_SRC}/include/hw/arm/"
+# Stop any existing container
+docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
 
-# Copy hw source files
+# Start container with both QEMU source and Pebble overlay mounted read-only
+docker run --rm --init -d \
+    --name "${CONTAINER_NAME}" \
+    -v "${QEMU_SRC}:/qemu-src:ro" \
+    -v "${SCRIPT_DIR}:/pebble:ro" \
+    "${DOCKER_IMAGE}" \
+    sleep infinity
+
+echo "=== Preparing QEMU source with Pebble overlay ==="
+
+# Inside container: copy QEMU source to writable dir and overlay Pebble files
+docker exec "${CONTAINER_NAME}" bash -c '
+set -ex
+
+# Copy QEMU source to writable location
+cp -a /qemu-src /qemu-rw
+cd /qemu-rw
+
+# Copy Pebble include files
+mkdir -p include/hw/arm
+cp /pebble/include/hw/arm/stm32_common.h include/hw/arm/
+cp /pebble/include/hw/arm/pebble.h include/hw/arm/
+cp /pebble/include/hw/arm/stm32_clktree.h include/hw/arm/
+
+# Copy Pebble hw source files
 for dir in arm misc char ssi timer dma display gpio; do
-    if [ -d "${SCRIPT_DIR}/hw/${dir}" ]; then
-        mkdir -p "${QEMU_SRC}/hw/${dir}"
-        for f in "${SCRIPT_DIR}/hw/${dir}"/*; do
-            [ -f "$f" ] && cp "$f" "${QEMU_SRC}/hw/${dir}/" && echo "  -> hw/${dir}/$(basename "$f")"
+    if [ -d "/pebble/hw/${dir}" ]; then
+        mkdir -p "hw/${dir}"
+        for f in /pebble/hw/${dir}/*; do
+            [ -f "$f" ] && cp "$f" "hw/${dir}/" && echo "  -> hw/${dir}/$(basename "$f")"
         done
     fi
 done
 
-# === Apply source patches ===
+# Apply source patches
 echo "  Applying patches..."
-for p in "${SCRIPT_DIR}/patches/"*.patch; do
+for p in /pebble/patches/*.patch; do
     [ -f "$p" ] || continue
-    patch -d "${QEMU_SRC}" -p1 --forward < "$p" || true
+    patch -p1 --forward < "$p" || true
 done
 
-# === Patch Kconfig ===
-KCONFIG="${QEMU_SRC}/hw/arm/Kconfig"
-if ! grep -q "CONFIG_PEBBLE" "${KCONFIG}"; then
+# Patch Kconfig
+if ! grep -q "CONFIG_PEBBLE" hw/arm/Kconfig; then
     echo "  Patching hw/arm/Kconfig..."
-    cat >> "${KCONFIG}" << 'EOF'
+    cat >> hw/arm/Kconfig << KEOF
 
 config PEBBLE
     bool
@@ -61,105 +81,120 @@ config PEBBLE
     imply ARM_V7M
     select ARM_V7M
     select PFLASH_CFI02
-EOF
+KEOF
 fi
 
-# === Patch default.mak ===
-DEFAULT_MAK="${QEMU_SRC}/configs/devices/arm-softmmu/default.mak"
-if ! grep -q "CONFIG_PEBBLE" "${DEFAULT_MAK}"; then
-    echo "CONFIG_PEBBLE=y" >> "${DEFAULT_MAK}"
+# Patch default.mak
+if ! grep -q "CONFIG_PEBBLE" configs/devices/arm-softmmu/default.mak; then
+    echo "CONFIG_PEBBLE=y" >> configs/devices/arm-softmmu/default.mak
 fi
 
-# === Patch meson.build files ===
+# Helper function to patch meson.build files
 patch_meson() {
     local file="$1"
     local marker="$2"
     local content="$3"
     if ! grep -q "${marker}" "${file}"; then
         echo "  Patching ${file}..."
-        echo "" >> "${file}"
-        echo "${content}" >> "${file}"
+        printf "\n%s\n" "${content}" >> "${file}"
     fi
 }
 
-# hw/arm/meson.build — QEMU 10.1 uses arm_common_ss for non-virt ARM devices
-# Insert BEFORE the hw_arch line
-ARM_MESON="${QEMU_SRC}/hw/arm/meson.build"
-if ! grep -q "CONFIG_PEBBLE" "${ARM_MESON}"; then
-    echo "  Patching hw/arm/meson.build..."
-    sed -i.bak "/^hw_arch += {'arm': arm_ss}/i\\
-arm_common_ss.add(when: 'CONFIG_PEBBLE', if_true: files(\\
-  'pebble.c',\\
-  'pebble_robert.c',\\
-  'pebble_silk.c',\\
-  'pebble_control.c',\\
-  'pebble_stm32f4xx_soc.c',\\
-))" "${ARM_MESON}"
-fi
+# hw/arm/meson.build — QEMU 10.1 uses arm_common_ss (not arm_ss)
+patch_meson hw/arm/meson.build "CONFIG_PEBBLE" \
+"arm_common_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files(
+  '"'"'pebble.c'"'"',
+  '"'"'pebble_robert.c'"'"',
+  '"'"'pebble_silk.c'"'"',
+  '"'"'pebble_control.c'"'"',
+  '"'"'pebble_stm32f4xx_soc.c'"'"',
+))"
 
 # hw/misc/meson.build
-patch_meson "${QEMU_SRC}/hw/misc/meson.build" "stm32_pebble" \
-"system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
-  'stm32_pebble_rcc.c',
-  'stm32_pebble_clktree.c',
-  'stm32_pebble_common.c',
-  'stm32_pebble_exti.c',
-  'stm32_pebble_syscfg.c',
-  'stm32_pebble_adc.c',
-  'stm32_pebble_pwr.c',
-  'stm32_pebble_crc.c',
-  'stm32_pebble_flash.c',
-  'stm32_pebble_dummy.c',
-  'stm32_pebble_i2c.c',
+patch_meson hw/misc/meson.build "stm32_pebble" \
+"system_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files(
+  '"'"'stm32_pebble_rcc.c'"'"',
+  '"'"'stm32_pebble_clktree.c'"'"',
+  '"'"'stm32_pebble_common.c'"'"',
+  '"'"'stm32_pebble_exti.c'"'"',
+  '"'"'stm32_pebble_syscfg.c'"'"',
+  '"'"'stm32_pebble_adc.c'"'"',
+  '"'"'stm32_pebble_pwr.c'"'"',
+  '"'"'stm32_pebble_crc.c'"'"',
+  '"'"'stm32_pebble_flash.c'"'"',
+  '"'"'stm32_pebble_dummy.c'"'"',
+  '"'"'stm32_pebble_i2c.c'"'"',
 ))"
 
 # hw/timer/meson.build
-patch_meson "${QEMU_SRC}/hw/timer/meson.build" "stm32_pebble" \
-"system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
-  'stm32_pebble_tim.c',
-  'stm32_pebble_rtc.c',
+patch_meson hw/timer/meson.build "stm32_pebble" \
+"system_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files(
+  '"'"'stm32_pebble_tim.c'"'"',
+  '"'"'stm32_pebble_rtc.c'"'"',
 ))"
 
 # hw/ssi/meson.build
-patch_meson "${QEMU_SRC}/hw/ssi/meson.build" "stm32_pebble" \
-"system_ss.add(when: 'CONFIG_PEBBLE', if_true: files('stm32_pebble_spi.c'))"
+patch_meson hw/ssi/meson.build "stm32_pebble" \
+"system_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files('"'"'stm32_pebble_spi.c'"'"'))"
 
 # hw/dma/meson.build
-patch_meson "${QEMU_SRC}/hw/dma/meson.build" "stm32_pebble" \
-"system_ss.add(when: 'CONFIG_PEBBLE', if_true: files('stm32_pebble_dma.c'))"
+patch_meson hw/dma/meson.build "stm32_pebble" \
+"system_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files('"'"'stm32_pebble_dma.c'"'"'))"
 
 # hw/display/meson.build
-patch_meson "${QEMU_SRC}/hw/display/meson.build" "pebble_snowy" \
-"system_ss.add(when: 'CONFIG_PEBBLE', if_true: files('pebble_snowy_display.c'))"
+patch_meson hw/display/meson.build "pebble_snowy" \
+"system_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files('"'"'pebble_snowy_display.c'"'"'))"
 
 # hw/gpio/meson.build
-patch_meson "${QEMU_SRC}/hw/gpio/meson.build" "stm32_pebble" \
-"system_ss.add(when: 'CONFIG_PEBBLE', if_true: files('stm32_pebble_gpio.c'))"
+patch_meson hw/gpio/meson.build "stm32_pebble" \
+"system_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files('"'"'stm32_pebble_gpio.c'"'"'))"
 
 # hw/char/meson.build
-patch_meson "${QEMU_SRC}/hw/char/meson.build" "stm32_pebble_uart" \
-"system_ss.add(when: 'CONFIG_PEBBLE', if_true: files('stm32_pebble_uart.c'))"
+patch_meson hw/char/meson.build "stm32_pebble_uart" \
+"system_ss.add(when: '"'"'CONFIG_PEBBLE'"'"', if_true: files('"'"'stm32_pebble_uart.c'"'"'))"
 
-echo ""
-echo "=== Building WASM inside Docker ==="
+# === WASM cross-compilation patches ===
+python3 /pebble/scripts/patch_wasm.py /qemu-rw
 
-# Stop any existing container
-docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+# Clone dtc subproject (needed, source is tarball not git repo)
+if [ ! -d subprojects/dtc/libfdt ]; then
+    echo "  Cloning dtc subproject..."
+    rm -rf subprojects/dtc
+    git clone --depth 1 https://github.com/dgibson/dtc.git subprojects/dtc
+fi
 
-# Start build container with QEMU source mounted
-docker run --rm --init -d \
-    --name "${CONTAINER_NAME}" \
-    -v "${QEMU_SRC}:/qemu:ro" \
-    "${DOCKER_IMAGE}" \
-    sleep infinity
+# Install tomli (needed by QEMU 10.1 configure)
+pip3 install tomli 2>&1 | tail -1
 
-# Build inside container
+echo "  Pebble overlay complete."
+'
+
+echo "=== Patching configure for exe_wrapper ==="
+
+# QEMU 10.1 configure doesn't add exe_wrapper for emscripten cross-compilation.
+# Meson needs it to run cross-compiled test executables during build.
+# Use Python to patch since shell quoting is fragile.
+docker exec "${CONTAINER_NAME}" python3 -c "
+import re
+with open('/qemu-rw/configure', 'r') as f:
+    content = f.read()
+# Add exe_wrapper line after the strip line in cross file generation
+old = 'echo \"strip = [\$(meson_quote \$strip)]\" >> \$cross'
+new = old + chr(10) + '  echo \"exe_wrapper = [' + chr(39) + 'node' + chr(39) + ']\" >> \$cross'
+content = content.replace(old, new, 1)
+with open('/qemu-rw/configure', 'w') as f:
+    f.write(content)
+print('Patched configure to add exe_wrapper')
+"
+
+echo "=== Configuring and building ==="
+
 docker exec "${CONTAINER_NAME}" bash -c '
 set -ex
 cd /build
 
 # Configure QEMU for WASM with arm-softmmu + TCI
-emconfigure /qemu/configure \
+emconfigure /qemu-rw/configure \
     --static \
     --target-list=arm-softmmu \
     --without-default-features \
@@ -167,22 +202,17 @@ emconfigure /qemu/configure \
     --enable-tcg-interpreter \
     --disable-tools \
     --disable-docs \
-    --disable-gtk \
-    --disable-sdl \
-    --disable-opengl \
-    --disable-virglrenderer \
-    --disable-vnc \
-    --disable-spice \
-    --disable-curses \
-    --disable-brlapi \
-    --disable-vte \
-    --disable-pie
+    --disable-pie \
+    --extra-cflags="-DSTM32_UART_NO_BAUD_DELAY"
 
 # Build
 emmake make -j$(nproc) qemu-system-arm 2>&1
 
-echo "=== Build output files ==="
-ls -la qemu-system-arm* 2>/dev/null || echo "No output files found"
+EXIT_CODE=$?
+echo "EXIT_CODE=$EXIT_CODE"
+
+echo "=== Done ==="
+ls -lh qemu-system-arm.js qemu-system-arm.wasm qemu-system-arm.worker.js 2>/dev/null || echo "Build output files not found"
 '
 
 echo ""
@@ -191,23 +221,10 @@ echo "=== Copying build artifacts ==="
 mkdir -p "${WEB_DIR}"
 
 # Copy WASM build output
-docker cp "${CONTAINER_NAME}:/build/qemu-system-arm" "${WEB_DIR}/qemu-system-arm.js" 2>/dev/null || true
-docker cp "${CONTAINER_NAME}:/build/qemu-system-arm.js" "${WEB_DIR}/qemu-system-arm.js" 2>/dev/null || true
-docker cp "${CONTAINER_NAME}:/build/qemu-system-arm.wasm" "${WEB_DIR}/" 2>/dev/null || true
-docker cp "${CONTAINER_NAME}:/build/qemu-system-arm.worker.js" "${WEB_DIR}/" 2>/dev/null || true
-
-# Copy pc-bios files needed by QEMU
-docker exec "${CONTAINER_NAME}" bash -c '
-mkdir -p /build/pack
-cp -r /qemu/pc-bios/*.bin /build/pack/ 2>/dev/null || true
-cp -r /qemu/pc-bios/*.rom /build/pack/ 2>/dev/null || true
-cp -r /qemu/pc-bios/*.dtb /build/pack/ 2>/dev/null || true
-'
-
-# Stop container
-docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+docker cp "${CONTAINER_NAME}:/build/qemu-system-arm.js" "${WEB_DIR}/"
+docker cp "${CONTAINER_NAME}:/build/qemu-system-arm.wasm" "${WEB_DIR}/"
+docker cp "${CONTAINER_NAME}:/build/qemu-system-arm.worker.js" "${WEB_DIR}/"
 
 echo ""
 echo "=== WASM build complete ==="
-echo "Output: ${WEB_DIR}/"
-ls -la "${WEB_DIR}/"
+ls -lh "${WEB_DIR}/qemu-system-arm"*
