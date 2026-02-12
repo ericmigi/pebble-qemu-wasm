@@ -32,7 +32,7 @@
 #include "hw/block/flash.h"
 #include "block/block.h"
 #include "system/block-backend.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
@@ -125,7 +125,7 @@ static const Property f2xx_flash_properties[] = {
     DEFINE_PROP_UINT64("base_address", struct f2xx_flash, base_address, 0x08000000),
 };
 
-static void f2xx_flash_class_init(ObjectClass *klass, void *data)
+static void f2xx_flash_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

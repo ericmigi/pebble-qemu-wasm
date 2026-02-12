@@ -5,6 +5,12 @@
 
 #include "qemu/osdep.h"
 #include "hw/boards.h"
+#if __has_include("hw/arm/machines-qom.h")
+#include "hw/arm/machines-qom.h"
+#endif
+#ifndef DEFINE_MACHINE_ARM
+#define DEFINE_MACHINE_ARM DEFINE_MACHINE
+#endif
 #include "hw/arm/pebble.h"
 #include "target/arm/cpu-qom.h"
 #include "qemu/error-report.h"
@@ -58,4 +64,4 @@ static void pebble_silk_bb_machine_init(MachineClass *mc)
     mc->valid_cpu_types = valid_cpu_types;
 }
 
-DEFINE_MACHINE("pebble-silk-bb", pebble_silk_bb_machine_init)
+DEFINE_MACHINE_ARM("pebble-silk-bb", pebble_silk_bb_machine_init)

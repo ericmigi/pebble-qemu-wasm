@@ -368,7 +368,7 @@ void stm32_exti_set_gpio_array(Stm32Exti *s, stm32f2xx_gpio **gpio)
     s->stm32_gpio = gpio;
 }
 
-static void stm32_exti_class_init(ObjectClass *klass, void *data)
+static void stm32_exti_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

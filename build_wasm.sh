@@ -185,7 +185,8 @@ emconfigure /qemu-rw/configure \
     --disable-tools \
     --disable-docs \
     --disable-pie \
-    --extra-cflags="-DSTM32_UART_NO_BAUD_DELAY"
+    --extra-cflags="-DSTM32_UART_NO_BAUD_DELAY -DTCI_INSTRUMENT -flto -msimd128" \
+    --extra-ldflags="-flto"
 
 # Build — Emscripten outputs .js extension, so target is qemu-system-arm.js
 ninja -j$(nproc) qemu-system-arm.js 2>&1

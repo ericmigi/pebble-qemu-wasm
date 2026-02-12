@@ -678,7 +678,7 @@ f2xx_rtc_realize(DeviceState *dev, Error **errp)
 }
 
 static void
-f2xx_rtc_class_init(ObjectClass *klass, void *data)
+f2xx_rtc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = f2xx_rtc_realize;

@@ -342,7 +342,7 @@ static const Property f2xx_i2c_properties[] = {
 };
 
 static void
-f2xx_i2c_class_init(ObjectClass *c, void *data)
+f2xx_i2c_class_init(ObjectClass *c, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(c);
 

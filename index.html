@@ -160,6 +160,7 @@
     <div id="status">Select firmware and click Boot</div>
     <div id="progress-bar"><div id="progress-fill"></div></div>
 
+    <div id="fps-counter" style="font-size: 12px; color: #4cc9f0; margin-bottom: 5px;">FPS: --</div>
     <div id="display-wrapper">
         <canvas id="canvas" width="200" height="228"></canvas>
     </div>
@@ -195,6 +196,22 @@
             fwSelect.value = 'sdk';
         }
 
+        // URL parameter support (e.g. ?fw=sdk&shift=0)
+        var params = new URLSearchParams(window.location.search);
+        if (params.has('fw')) {
+            fwSelect.value = params.get('fw');
+        }
+
+        // icount shift parameter: ?shift=0..10, ?shift=auto, ?shift=off
+        var shiftParam = params.get('shift');
+        function buildIcountArgs() {
+            if (shiftParam === 'off') return [];
+            if (shiftParam !== null && /^(\d+|auto)$/.test(shiftParam)) {
+                return ['-icount', 'shift=' + shiftParam];
+            }
+            return ['-icount', 'shift=6']; // default (shift=6 gives best steady FPS)
+        }
+
         function ts() {
             var d = new Date();
             return d.toTimeString().slice(0, 8) + '.' +
@@ -202,6 +219,7 @@
         }
 
         function log(msg) {
+            console.log(msg);
             consoleEl.textContent += ts() + ' ' + msg + '\n';
             if (consoleEl.textContent.length > 100000) {
                 consoleEl.textContent = consoleEl.textContent.slice(-50000);
@@ -344,8 +362,7 @@
                 '-serial', 'null',
                 '-serial', 'null',
                 '-serial', 'file:/tmp/pebble_serial.log',
-                '-icount', 'shift=auto',
-            ],
+            ].concat(buildIcountArgs()),
             print: function(text) {
                 log(text);
             },
@@ -367,6 +384,11 @@
             fwSelect.disabled = true;
             bootEmulator();
         });
+
+        // Auto-boot via URL parameter (e.g. ?fw=sdk&auto)
+        if (params.has('auto')) {
+            bootBtn.click();
+        }
 
         async function bootEmulator() {
             var variant = fwSelect.value;
@@ -398,7 +420,9 @@
                     log('Firmware written to virtual filesystem (' + variant + ')');
                 });
 
-                setStatus('Loading QEMU WASM module (33MB)...');
+                var icountArgs = buildIcountArgs();
+                log('[config] icount: ' + (icountArgs.length ? icountArgs[1] : 'off'));
+                setStatus('Loading QEMU WASM module (17MB)...');
                 var script = document.createElement('script');
                 script.src = ASSET_BASE + 'qemu-system-arm.js';
                 script.onerror = function() {
@@ -421,6 +445,18 @@
         var totalFrames = 0;
         var canvasCtx = document.getElementById('canvas').getContext('2d');
 
+        // FPS measurement (3-second window, fractional for sub-1 rates)
+        var fpsFrameCount = 0;
+        var fpsLastTime = performance.now();
+        var currentFps = 0;
+        var fpsEl = document.getElementById('fps-counter');
+        window.pebbleFps = function() { return currentFps; };
+
+        // Cached ImageData — reused across frames to avoid allocation per render
+        var cachedImgData = null;
+        var cachedWidth = 0;
+        var cachedHeight = 0;
+
         function renderLoop() {
             if (!runtimeReady) return;
             try {
@@ -428,6 +464,17 @@
                 if (frameCount === lastFrameCount) return;
                 lastFrameCount = frameCount;
                 totalFrames++;
+
+                fpsFrameCount++;
+                var now = performance.now();
+                var elapsed = now - fpsLastTime;
+                if (elapsed >= 3000) {
+                    currentFps = Math.round(fpsFrameCount / (elapsed / 1000) * 10) / 10;
+                    fpsEl.textContent = 'FPS: ' + currentFps.toFixed(1);
+                    console.log('[fps] ' + currentFps.toFixed(1));
+                    fpsFrameCount = 0;
+                    fpsLastTime = now;
+                }
 
                 var width = Module._pebble_display_width();
                 var height = Module._pebble_display_height();
@@ -440,23 +487,30 @@
                     setStatus('Display active: ' + width + 'x' + height);
                 }
 
-                var imgData = canvasCtx.createImageData(width, height);
-                var pixels = imgData.data;
+                // Reuse ImageData across frames (avoid GC pressure)
+                if (!cachedImgData || cachedWidth !== width || cachedHeight !== height) {
+                    cachedImgData = canvasCtx.createImageData(width, height);
+                    cachedWidth = width;
+                    cachedHeight = height;
+                }
 
+                // Bulk pixel copy using Uint32Array for ~4x fewer writes
+                // Source: BGRA (heap[s]=B, [s+1]=G, [s+2]=R)
+                // Dest: RGBA ImageData, but as Uint32 on little-endian: 0xAABBGGRR
+                var dst32 = new Uint32Array(cachedImgData.data.buffer);
+                var heap = Module.HEAPU8;
                 for (var y = 0; y < height; y++) {
+                    var rowSrc = dataPtr + y * stride;
+                    var rowDst = y * width;
                     for (var x = 0; x < width; x++) {
-                        var srcOff = dataPtr + y * stride + x * 4;
-                        var dstOff = (y * width + x) * 4;
-                        pixels[dstOff + 0] = Module.HEAPU8[srcOff + 2]; // R
-                        pixels[dstOff + 1] = Module.HEAPU8[srcOff + 1]; // G
-                        pixels[dstOff + 2] = Module.HEAPU8[srcOff + 0]; // B
-                        pixels[dstOff + 3] = 255;                       // A
+                        var s = rowSrc + x * 4;
+                        dst32[rowDst + x] = heap[s+2] | (heap[s+1] << 8) | (heap[s] << 16) | 0xFF000000;
                     }
                 }
-                canvasCtx.putImageData(imgData, 0, 0);
+                canvasCtx.putImageData(cachedImgData, 0, 0);
             } catch(e) {}
         }
-        setInterval(renderLoop, 50);
+        setInterval(renderLoop, 16);
 
         // ================================================================
         // Firmware serial log parser (UART protocol from serial2)

@@ -1,0 +1,21 @@
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -1280,7 +1280,17 @@ static MemoryRegionSection *io_prepare(hwaddr *out_offset, CPUState *cpu,
+     mr_offset = (xlat & TARGET_PAGE_MASK) + addr;
+     cpu->mem_io_pc = retaddr;
+     if (!cpu->neg.can_do_io) {
++#ifdef __EMSCRIPTEN__
++        /*
++         * Skip I/O recompilation on Emscripten — it triggers longjmp which
++         * throws a JS exception (very expensive, ~22% of CPU time).
++         * Instead, just allow I/O to proceed. The cost is slightly imprecise
++         * icount accounting (MMIO timing off by at most TB length), which is
++         * negligible for our use case.
++         */
++        cpu->neg.can_do_io = true;
++#else
+         cpu_io_recompile(cpu, retaddr);
++#endif
+     }
+
+     *out_offset = mr_offset;

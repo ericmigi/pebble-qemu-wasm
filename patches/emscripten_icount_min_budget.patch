@@ -1,0 +1,22 @@
+--- a/accel/tcg/tcg-accel-ops-icount.c
++++ b/accel/tcg/tcg-accel-ops-icount.c
+@@ -60,7 +60,17 @@ static int64_t icount_get_limit(void)
+             deadline = INT32_MAX;
+         }
+
+-        return icount_round(deadline);
++        {
++            int64_t result = icount_round(deadline);
++#ifdef __EMSCRIPTEN__
++            /* Minimum budget to reduce BQL contention in WASM.
++             * Emscripten futex/mutex overhead is high, so we batch
++             * timer processing to amortize lock cycles. */
++            if (result < 2000000) {
++                result = 2000000;
++            }
++#endif
++            return result;
++        }
+     } else {
+         return replay_get_instructions();
+     }

@@ -764,33 +764,32 @@ static uint32_t ps_display_transfer(SSIPeripheral *dev, uint32_t data)
 
 
 // -----------------------------------------------------------------------------
-// This function maps an 8 bit value from the frame buffer into red, green, and blue
-// components
-static PSDisplayPixelColor ps_display_get_rgb(PSDisplayGlobals *s, uint8_t pixel_value) {
+// Pre-computed color lookup table (256 entries).
+// Rebuilt when brightness/backlight changes. Eliminates float math per pixel.
+static PSDisplayPixelColor s_color_lut[256];
+static bool s_color_lut_valid = false;
 
-  PSDisplayPixelColor c;
-  c.red = ((pixel_value & 0xC0) >> 6) * 255 / 3;
-  c.green = ((pixel_value & 0x30) >> 4) * 255 / 3;
-  c.blue = ((pixel_value & 0x0C) >> 2) * 255 / 3;
+static void ps_display_rebuild_color_lut(PSDisplayGlobals *s)
+{
+    float brightness = s->backlight_enabled ? s->brightness : 0.0f;
+    int max_val = 170 + (int)((255 - 170) * brightness);
 
-  // Adjust the pixel RGB to compensate for the set brightness.
-  // brightness = 0:  255 in maps to 170 out
-  // brightness = 1.0: 255 in maps to 255 out
-  float brightness = s->backlight_enabled ? s->brightness : 0.0;
-  int max_val = 170 + (255 - 170) * brightness;
-  c.red = (int)c.red * max_val/255;
-  c.green = (int)c.green * max_val/255;
-  c.blue = (int)c.blue * max_val/255;
+    for (int i = 0; i < 256; i++) {
+        int r = ((i & 0xC0) >> 6) * 255 / 3;
+        int g = ((i & 0x30) >> 4) * 255 / 3;
+        int b = ((i & 0x0C) >> 2) * 255 / 3;
+        s_color_lut[i].red   = r * max_val / 255;
+        s_color_lut[i].green = g * max_val / 255;
+        s_color_lut[i].blue  = b * max_val / 255;
+    }
+    s_color_lut_valid = true;
+}
 
-  return c;
-
-  /*
-  static PSDisplayPixelColors[256] = {
-    {0, 0, 0 },
-  };
-
-  return PSDisplayPixelColors[pixel_value];
-  */
+static inline PSDisplayPixelColor ps_display_get_rgb(PSDisplayGlobals *s, uint8_t pixel_value) {
+    if (!s_color_lut_valid) {
+        ps_display_rebuild_color_lut(s);
+    }
+    return s_color_lut[pixel_value];
 }
 
 
@@ -905,6 +904,26 @@ static void ps_display_update_display(void *arg)
 
     dpy_gfx_update(s->con, 0, 0, s->num_cols, s->num_rows);
 
+    /* FPS measurement — wall-clock based, logs every 3 seconds */
+    {
+        static int64_t fps_frame_count = 0;
+        static int64_t fps_last_ns = 0;
+        int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        fps_frame_count++;
+        if (fps_last_ns == 0) {
+            fps_last_ns = now_ns;
+        } else {
+            int64_t elapsed_ns = now_ns - fps_last_ns;
+            if (elapsed_ns >= 3000000000LL) { /* 3 seconds */
+                double fps = (double)fps_frame_count * 1e9 / elapsed_ns;
+                fprintf(stderr, "[fps] %.1f (%" PRId64 " frames in %.1fs)\n",
+                        fps, fps_frame_count, elapsed_ns / 1e9);
+                fps_frame_count = 0;
+                fps_last_ns = now_ns;
+            }
+        }
+    }
+
 #ifdef __EMSCRIPTEN__
     /* Update exported framebuffer info for JavaScript rendering */
     pebble_wasm_fb_ptr = surface_data(surface);
@@ -1011,6 +1030,7 @@ static void ps_display_backlight_enable_cb(void *opaque, int n, int level)
     bool enable = (level != 0);
     if (s->backlight_enabled != enable) {
         s->backlight_enabled = enable;
+        s_color_lut_valid = false;
         s->redraw = true;
     }
 }
@@ -1029,6 +1049,7 @@ static void ps_display_set_backlight_level_cb(void *opaque, int n, int level)
     float new_setting = MIN(1.0, bright_f * 4);
     if (new_setting != s->brightness) {
         s->brightness = MIN(1.0, bright_f * 4);
+        s_color_lut_valid = false;
         if (s->backlight_enabled) {
             s->redraw = true;
         }
@@ -1093,7 +1114,7 @@ static void ps_display_wasm_refresh_cb(void *opaque)
 
     /* Re-arm: use VIRTUAL clock so icount deadlines wake cpu_exec() */
     timer_mod(s->wasm_refresh_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 33);
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
 }
 #endif
 
@@ -1171,7 +1192,11 @@ static const Property ps_display_init_properties[] = {
 
 
 // -----------------------------------------------------------------------------
-static void ps_display_class_init(ObjectClass *klass, void *data)
+#ifdef __EMSCRIPTEN__
+static void ps_display_class_init(ObjectClass *klass, const void *data)
+#else
+static void ps_display_class_init(ObjectClass *klass, const void *data)
+#endif
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);

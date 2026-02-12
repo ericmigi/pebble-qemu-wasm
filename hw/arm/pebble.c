@@ -27,6 +27,19 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/boards.h"
+#ifdef HW_ARM_MACHINES_QOM_H
+/* QEMU 10.2+: already included */
+#else
+/* Try to include for DEFINE_MACHINE_ARM, fall back to DEFINE_MACHINE */
+#if __has_include("hw/arm/machines-qom.h")
+#include "hw/arm/machines-qom.h"
+#endif
+#endif
+
+/* Use DEFINE_MACHINE_ARM if available (QEMU 10.2+), else plain DEFINE_MACHINE */
+#ifndef DEFINE_MACHINE_ARM
+#define DEFINE_MACHINE_ARM DEFINE_MACHINE
+#endif
 #include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
 #include "hw/ssi/ssi.h"
@@ -325,7 +338,7 @@ static void pebble_board_realize(DeviceState *dev, Error **errp)
                             "pebble_board_vibe_in", 1);
 }
 
-static void pebble_board_class_init(ObjectClass *klass, void *data)
+static void pebble_board_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = pebble_board_realize;
@@ -562,7 +575,7 @@ static void pebble_snowy_bb_machine_init(MachineClass *mc)
     mc->ignore_memory_transaction_failures = true;
 }
 
-DEFINE_MACHINE("pebble-snowy-bb", pebble_snowy_bb_machine_init)
+DEFINE_MACHINE_ARM("pebble-snowy-bb", pebble_snowy_bb_machine_init)
 
 static void pebble_snowy_emery_machine_init(MachineClass *mc)
 {
@@ -576,7 +589,7 @@ static void pebble_snowy_emery_machine_init(MachineClass *mc)
     mc->ignore_memory_transaction_failures = true;
 }
 
-DEFINE_MACHINE("pebble-snowy-emery-bb", pebble_snowy_emery_machine_init)
+DEFINE_MACHINE_ARM("pebble-snowy-emery-bb", pebble_snowy_emery_machine_init)
 
 static void pebble_s4_bb_machine_init(MachineClass *mc)
 {
@@ -590,4 +603,4 @@ static void pebble_s4_bb_machine_init(MachineClass *mc)
     mc->ignore_memory_transaction_failures = true;
 }
 
-DEFINE_MACHINE("pebble-s4-bb", pebble_s4_bb_machine_init)
+DEFINE_MACHINE_ARM("pebble-s4-bb", pebble_s4_bb_machine_init)

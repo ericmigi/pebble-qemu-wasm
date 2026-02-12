@@ -7373,7 +7373,7 @@ function ffi_prep_closure_loc_js(closure,cif,fun,user_data,codeloc) { var abi = 
   
   var Asyncify = {
   instrumentWasmImports(imports) {
-        var importPattern = /^(ffi_call_js|invoke_.*|__asyncjs__.*)$/;
+        var importPattern = /^(invoke_.*|__asyncjs__.*)$/;
   
         for (var x in imports) {
           (function(x) {
@@ -9300,8 +9300,8 @@ var _asyncify_start_unwind = createExportWrapper('asyncify_start_unwind');
 var _asyncify_stop_unwind = createExportWrapper('asyncify_stop_unwind');
 var _asyncify_start_rewind = createExportWrapper('asyncify_start_rewind');
 var _asyncify_stop_rewind = createExportWrapper('asyncify_stop_rewind');
-var ___start_em_js = Module['___start_em_js'] = 10462418;
-var ___stop_em_js = Module['___stop_em_js'] = 10472827;
+var ___start_em_js = Module['___start_em_js'] = 10459538;
+var ___stop_em_js = Module['___stop_em_js'] = 10469947;
 function invoke_ii(index,a1) {
   var sp = stackSave();
   try {
