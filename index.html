@@ -209,7 +209,7 @@
             if (shiftParam !== null && /^(\d+|auto)$/.test(shiftParam)) {
                 return ['-icount', 'shift=' + shiftParam];
             }
-            return ['-icount', 'shift=6']; // default (shift=6 gives best steady FPS)
+            return []; // default: no icount (wall-clock time)
         }
 
         function ts() {
@@ -649,6 +649,10 @@
         }
 
         var keyHoldTimers = {};
+        // With icount, CPU is slow so keyup needs a long delay for firmware to register.
+        // Without icount, CPU runs at real-time so release immediately.
+        var useIcount = shiftParam !== 'off' && shiftParam !== null;
+        var keyUpDelay = useIcount ? 1000 : 0;
 
         document.addEventListener('keydown', function(e) {
             var bit = keyMap[e.key];
@@ -666,10 +670,14 @@
             if (bit !== undefined) {
                 e.preventDefault();
                 if (keyHoldTimers[e.key]) clearTimeout(keyHoldTimers[e.key]);
-                keyHoldTimers[e.key] = setTimeout(function() {
+                if (keyUpDelay > 0) {
+                    keyHoldTimers[e.key] = setTimeout(function() {
+                        updateButtons(bit, false);
+                        keyHoldTimers[e.key] = null;
+                    }, keyUpDelay);
+                } else {
                     updateButtons(bit, false);
-                    keyHoldTimers[e.key] = null;
-                }, 1000);
+                }
             }
         });
 
