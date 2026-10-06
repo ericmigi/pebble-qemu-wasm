@@ -1,0 +1,624 @@
+diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
+index 4230e88..e455ef7 100644
+--- a/configs/meson/emscripten.txt
++++ b/configs/meson/emscripten.txt
+@@ -4,5 +4,5 @@ cpp_args = ['-pthread']
+ objc_args = ['-pthread']
+ # -sPROXY_TO_PTHREAD link time flag always requires -pthread even during
+ # configuration so explicitly add the flag here.
+-c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
+-cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
++c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,HEAPU8,HEAPU32,HEAP16']
++cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,HEAPU8,HEAPU32,HEAP16']
+diff --git a/hw/arm/pebble_control.c b/hw/arm/pebble_control.c
+index 4190f44..39ab08e 100644
+--- a/hw/arm/pebble_control.c
++++ b/hw/arm/pebble_control.c
+@@ -33,6 +33,7 @@
+ #include "hw/arm/pebble.h"
+ #include "hw/arm/pebble_simple_uart.h"
+ #include "hw/arm/pebble_gpio.h"
++#include "hw/arm/pebble_wasm.h"
+ 
+ //#define DEBUG_PEBBLE_CONTROL
+ #ifdef DEBUG_PEBBLE_CONTROL
+@@ -417,6 +418,16 @@ static void pebble_control_consume_send_bytes(PebbleControl *s, uint32_t n)
+ // This method gets passed to the UART's stm32_uart_set_write_handler(). This way
+ //  we can intercept all writes that the UART sends to the front end and insure that
+ //  we don't interrupt one mid-stream by sending a packet from QEMU
++static int pebble_control_host_write(PebbleControl *s, const uint8_t *buf, int len)
++{
++#ifdef __EMSCRIPTEN__
++    if (s->is_generic) {
++        return pbl_wasm_serial_write(buf, len);
++    }
++#endif
++    return qemu_chr_fe_write_all(&s->chr, buf, len);
++}
++
+ static int pebble_control_write(void *opaque, const uint8_t *buf, int len) {
+     PebbleControl *s = (PebbleControl *)opaque;
+ 
+@@ -483,7 +494,7 @@ static int pebble_control_write(void *opaque, const uint8_t *buf, int len) {
+         DPRINTF("%s: Sending packet of %d bytes to host (proto=0x%04x)\n",
+                __func__, total_size, ntohs(hdr->protocol));
+         while (total_size) {
+-            bytes_sent = qemu_chr_fe_write_all(&s->chr, s->send_char_buf, total_size);
++            bytes_sent = pebble_control_host_write(s, s->send_char_buf, total_size);
+             if (bytes_sent <= 0) {
+                 // Write error (e.g. TCP client disconnected), discard packet
+                 pebble_control_consume_send_bytes(s, total_size);
+@@ -495,7 +506,7 @@ static int pebble_control_write(void *opaque, const uint8_t *buf, int len) {
+ 
+     }
+ 
+-    return qemu_chr_fe_write_all(&s->chr, buf, len);
++    return pebble_control_host_write(s, buf, len);
+ }
+ 
+ 
+@@ -509,17 +520,17 @@ static void pebble_control_send_packet(PebbleControl *s, QemuProtocol protocol,
+     .protocol = htons(protocol),
+     .len = htons(len)
+   };
+-  qemu_chr_fe_write_all(&s->chr, (uint8_t *)&hdr, sizeof(hdr));
++  pebble_control_host_write(s, (uint8_t *)&hdr, sizeof(hdr));
+ 
+   // Send the data
+-  qemu_chr_fe_write_all(&s->chr, data, len);
++  pebble_control_host_write(s, data, len);
+ 
+   // Send the footer
+   QemuCommChannelFooter footer = (QemuCommChannelFooter) {
+     .signature = htons(QEMU_FOOTER_SIGNATURE)
+   };
+ 
+-  qemu_chr_fe_write_all(&s->chr, (uint8_t *)&footer, sizeof(footer));
++  pebble_control_host_write(s, (uint8_t *)&footer, sizeof(footer));
+ }
+ 
+ // -----------------------------------------------------------------------------------
+@@ -603,6 +614,10 @@ PebbleControl *pebble_control_create_generic(Chardev *chr, DeviceState *uart)
+                         true);
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    pbl_wasm_serial_register(s, pebble_control_can_receive,
++                              pebble_control_receive);
++#endif
+     return s;
+ }
+ 
+diff --git a/hw/arm/pebble_generic.c b/hw/arm/pebble_generic.c
+index 87f2a17..7dac9c1 100644
+--- a/hw/arm/pebble_generic.c
++++ b/hw/arm/pebble_generic.c
+@@ -35,6 +35,7 @@
+ #include "qom/object.h"
+ #include "hw/arm/pebble_generic.h"
+ #include "hw/misc/pebble_null_input.h"
++#include "hw/arm/pebble_simple_uart.h"
+ #include "pebble_control.h"
+ 
+ /* ===== Board configurations ===== */
+@@ -158,6 +159,10 @@ static void pbl_generic_init(MachineState *machine)
+         sysbus_mmio_map(sbd, 0, uart_base[i]);
+         sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(armv7m, uart_irq[i]));
+ 
++        if (i == 2) {
++            pbl_uart_enable_wasm_console(dev);
++        }
++
+         if (i == 1) {
+             uart1_dev = dev;
+         }
+diff --git a/hw/display/pebble_display.c b/hw/display/pebble_display.c
+index 3735dfd..aeb6ad3 100644
+--- a/hw/display/pebble_display.c
++++ b/hw/display/pebble_display.c
+@@ -40,6 +40,7 @@
+ #include "hw/core/qdev-properties.h"
+ #include "ui/console.h"
+ #include "ui/pixel_ops.h"
++#include "hw/arm/pebble_wasm.h"
+ 
+ #define TYPE_PEBBLE_DISPLAY "pebble-display"
+ OBJECT_DECLARE_SIMPLE_TYPE(PblDisplay, PEBBLE_DISPLAY)
+@@ -258,6 +259,9 @@ static void pbl_display_update(void *opaque)
+     }
+ 
+     dpy_gfx_update(s->con, 0, 0, s->width, s->height);
++#ifdef __EMSCRIPTEN__
++    pbl_wasm_display_publish(s->con, s->width, s->height);
++#endif
+ }
+ 
+ static void pbl_display_invalidate(void *opaque)
+@@ -460,6 +464,9 @@ static void pbl_display_realize(DeviceState *dev, Error **errp)
+     /* Create QemuConsole */
+     s->con = graphic_console_init(dev, 0, &pbl_display_ops, s);
+     qemu_console_resize(s->con, s->width, s->height);
++#ifdef __EMSCRIPTEN__
++    pbl_wasm_display_register(s, pbl_display_update);
++#endif
+ 
+     s->brightness = 0xFF;
+     s->bl_r = 0xFF;
+diff --git a/hw/intc/armv7m_nvic.c b/hw/intc/armv7m_nvic.c
+index 3a31eb5..13244e0 100644
+--- a/hw/intc/armv7m_nvic.c
++++ b/hw/intc/armv7m_nvic.c
+@@ -343,13 +343,21 @@ static inline int nvic_exec_prio(NVICState *s)
+ {
+     CPUARMState *env = &s->cpu->env;
+     int running = NVIC_NOEXC_PRIO;
++    uint32_t prio_mask = MAKE_64BIT_MASK(8 - s->num_prio_bits,
++                                       s->num_prio_bits);
++    /* BASEPRI has the same implemented priority bits as the NVIC IPRs.
++     * With three bits, 0xbf must mask priority 0xa0. Comparing 0xbf as
++     * eight bits otherwise lets a syscall IRQ preempt FreeRTOS critical
++     * sections, leaving uxCriticalNesting set after interrupt return. */
++    uint32_t basepri_ns = env->v7m.basepri[M_REG_NS] & prio_mask;
++    uint32_t basepri_s = env->v7m.basepri[M_REG_S] & prio_mask;
+ 
+-    if (env->v7m.basepri[M_REG_NS] > 0) {
+-        running = exc_group_prio(s, env->v7m.basepri[M_REG_NS], M_REG_NS);
++    if (basepri_ns > 0) {
++        running = exc_group_prio(s, basepri_ns, M_REG_NS);
+     }
+ 
+-    if (env->v7m.basepri[M_REG_S] > 0) {
+-        int basepri = exc_group_prio(s, env->v7m.basepri[M_REG_S], M_REG_S);
++    if (basepri_s > 0) {
++        int basepri = exc_group_prio(s, basepri_s, M_REG_S);
+         if (running > basepri) {
+             running = basepri;
+         }
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 1b172ca..abdbecd 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -173,6 +173,7 @@ system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+   'pebble_extflash.c',
+   'pebble_touch.c',
+   'pebble_audio.c',
++  'pebble_wasm.c',
+ ))
+ 
+ system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+diff --git a/hw/misc/pebble_audio.c b/hw/misc/pebble_audio.c
+index ca8f856..71676d8 100644
+--- a/hw/misc/pebble_audio.c
++++ b/hw/misc/pebble_audio.c
+@@ -27,6 +27,7 @@
+ #include "hw/core/qdev-properties.h"
+ #include "hw/core/qdev-properties-system.h"
+ #include "qemu/audio.h"
++#include "hw/arm/pebble_wasm.h"
+ 
+ #define TYPE_PEBBLE_AUDIO "pebble-audio"
+ OBJECT_DECLARE_SIMPLE_TYPE(PblAudio, PEBBLE_AUDIO)
+@@ -138,7 +139,18 @@ static void pbl_audio_trace(PblAudio *s, const char *fmt, ...)
+ static void pbl_audio_update_irq(PblAudio *s)
+ {
+     bool level = (s->intstat & s->intctrl) != 0;
++#ifdef __EMSCRIPTEN__
++    /* Preserve the original web build's edge-triggered IRQ behavior.
++     * Leaving the NVIC line asserted through exception return can re-pend
++     * the audio ISR during simultaneous touch/speaker activity in WASM. */
++    if (level) {
++        qemu_irq_pulse(s->irq);
++    } else {
++        qemu_set_irq(s->irq, 0);
++    }
++#else
+     qemu_set_irq(s->irq, level);
++#endif
+ }
+ 
+ static uint32_t pbl_audio_ring_free(PblAudio *s)
+@@ -194,7 +206,11 @@ static void pbl_audio_drain_timer(void *opaque)
+                     pbl_audio_ring_free(s));
+ 
+     /* Drain buffered samples to host audio */
+-    if (s->voice && s->ring_count > 0) {
++    if (
++#ifndef __EMSCRIPTEN__
++        s->voice &&
++#endif
++        s->ring_count > 0) {
+         /*
+          * We need to write samples as bytes to AUD_write.
+          * Write from ring_rd up to contiguous end, then wrap.
+@@ -208,9 +224,15 @@ static void pbl_audio_drain_timer(void *opaque)
+             }
+ 
+             uint32_t before = s->ring_count;
+-            int written_bytes = AUD_write(s->voice,
++            int written_bytes;
++#ifdef __EMSCRIPTEN__
++            written_bytes = pbl_wasm_audio_write(&s->ring_buf[s->ring_rd],
++                                                contiguous) * sizeof(int16_t);
++#else
++            written_bytes = AUD_write(s->voice,
+                                           &s->ring_buf[s->ring_rd],
+                                           contiguous * sizeof(int16_t));
++#endif
+             uint32_t written_samples = written_bytes / sizeof(int16_t);
+             s->aud_write_calls++;
+             pbl_audio_trace(s, "aud_write call=%" PRIu64
+@@ -277,6 +299,9 @@ static void pbl_audio_start(PblAudio *s)
+         return;
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    pbl_wasm_audio_configure(s->samplerate, s->volume);
++#else
+     struct audsettings as = {
+         .freq = s->samplerate ? s->samplerate : 16000,
+         .nchannels = 1,
+@@ -296,6 +321,7 @@ static void pbl_audio_start(PblAudio *s)
+ 
+     AUD_set_active_out(s->voice, 1);
+     pbl_audio_trace(s, "voice active");
++#endif
+ 
+     /* Reset ring buffer */
+     s->ring_wr = 0;
+@@ -429,6 +455,9 @@ static void pbl_audio_write(void *opaque, hwaddr offset,
+         break;
+     case AUDIO_VOLUME:
+         s->volume = value > 100 ? 100 : value;
++#ifdef __EMSCRIPTEN__
++        pbl_wasm_audio_configure(s->samplerate, s->volume);
++#endif
+         pbl_audio_trace(s, "mmio volume=%u raw=0x%" PRIx64,
+                         s->volume, value);
+         /* Apply volume to the voice if active */
+@@ -468,9 +497,13 @@ static void pbl_audio_realize(DeviceState *dev, Error **errp)
+ {
+     PblAudio *s = PEBBLE_AUDIO(dev);
+ 
++#ifndef __EMSCRIPTEN__
+     if (!AUD_backend_check(&s->audio_be, errp)) {
+         return;
+     }
++#else
++    pbl_wasm_audio_configure(16000, 100);
++#endif
+ 
+     s->drain_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
+                                   pbl_audio_drain_timer, s);
+diff --git a/hw/misc/pebble_simple_uart.c b/hw/misc/pebble_simple_uart.c
+index dfe1326..4e37936 100644
+--- a/hw/misc/pebble_simple_uart.c
++++ b/hw/misc/pebble_simple_uart.c
+@@ -22,6 +22,7 @@
+ #include "hw/core/qdev-properties-system.h"
+ #include "hw/arm/pebble_simple_uart.h"
+ #include "chardev/char-fe.h"
++#include "hw/arm/pebble_wasm.h"
+ 
+ #define TYPE_PEBBLE_SIMPLE_UART "pebble-simple-uart"
+ OBJECT_DECLARE_SIMPLE_TYPE(PblSimpleUart, PEBBLE_SIMPLE_UART)
+@@ -307,6 +308,14 @@ void pbl_uart_inject_rx(DeviceState *dev, const uint8_t *buf, int size)
+     pbl_uart_receive(s, buf, size);
+ }
+ 
++void pbl_uart_enable_wasm_console(DeviceState *dev)
++{
++#ifdef __EMSCRIPTEN__
++    pbl_wasm_console_register(PEBBLE_SIMPLE_UART(dev), pbl_uart_can_receive,
++                              pbl_uart_receive);
++#endif
++}
++
+ static const TypeInfo pbl_uart_info = {
+     .name          = TYPE_PEBBLE_SIMPLE_UART,
+     .parent        = TYPE_SYS_BUS_DEVICE,
+diff --git a/hw/misc/pebble_touch.c b/hw/misc/pebble_touch.c
+index b5fb338..0c675e2 100644
+--- a/hw/misc/pebble_touch.c
++++ b/hw/misc/pebble_touch.c
+@@ -22,6 +22,7 @@
+ #include "hw/core/qdev-properties.h"
+ #include "ui/console.h"
+ #include "ui/input.h"
++#include "hw/arm/pebble_wasm.h"
+ 
+ #define TYPE_PEBBLE_TOUCH "pebble-touch"
+ OBJECT_DECLARE_SIMPLE_TYPE(PblTouch, PEBBLE_TOUCH)
+@@ -150,9 +151,25 @@ static const MemoryRegionOps pbl_touch_ops = {
+     .valid.max_access_size = 4,
+ };
+ 
++#ifdef __EMSCRIPTEN__
++static void pbl_touch_wasm_update(void *opaque, uint32_t down,
++                                  uint32_t x, uint32_t y)
++{
++    PblTouch *s = opaque;
++    s->state = !!down;
++    s->x = MIN(x, s->display_w - 1);
++    s->y = MIN(y, s->display_h - 1);
++    s->intstat |= INT_TOUCH_EVENT;
++    pbl_touch_update_irq(s);
++}
++#endif
++
+ static void pbl_touch_realize(DeviceState *dev, Error **errp)
+ {
+     PblTouch *s = PEBBLE_TOUCH(dev);
++#ifdef __EMSCRIPTEN__
++    pbl_wasm_touch_register(s, pbl_touch_wasm_update);
++#endif
+ 
+     s->input_handler = qemu_input_handler_register(dev,
+                                                     &pbl_touch_input_handler);
+diff --git a/include/hw/arm/pebble_simple_uart.h b/include/hw/arm/pebble_simple_uart.h
+index e311be0..5666fc4 100644
+--- a/include/hw/arm/pebble_simple_uart.h
++++ b/include/hw/arm/pebble_simple_uart.h
+@@ -11,6 +11,8 @@
+ #define HW_ARM_PEBBLE_SIMPLE_UART_H
+ 
+ #include "hw/core/qdev.h"
++
++void pbl_uart_enable_wasm_console(DeviceState *dev);
+ #include "chardev/char-fe.h"
+ #include "qemu/main-loop.h"
+ 
+diff --git a/hw/misc/pebble_wasm.c b/hw/misc/pebble_wasm.c
+new file mode 100644
+index 0000000..54a045f
+--- /dev/null
++++ b/hw/misc/pebble_wasm.c
+@@ -0,0 +1,208 @@
++/* Browser bridges. All device callbacks run on QEMU's timer thread, while
++ * the browser only publishes/consumes shared-memory data using Atomics.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#include "qemu/atomic.h"
++#include "qemu/timer.h"
++#include "ui/console.h"
++#include "hw/arm/pebble_gpio.h"
++#include "hw/arm/pebble_wasm.h"
++
++#define SERIAL_SIZE 65536
++#define CONSOLE_SIZE 4096
++#define AUDIO_SIZE 1024
++#define AUDIO_QUEUE_SAMPLES 512
++
++/* Pointer fields are explicitly 32-bit even on the MEMORY64=2 build.
++ * QEMU is configured with the 32-bit address limit. */
++typedef struct {
++    uint32_t rx_buf, rx_size, tx_buf, tx_size;
++    uint32_t rx_head, rx_tail, tx_head, tx_tail;
++} SerialControl;
++typedef struct {
++    uint32_t buf, size, head, tail;
++} RingControl;
++typedef struct {
++    uint32_t buf, size, head, tail, rate, volume;
++} AudioControl;
++typedef struct {
++    void *opaque;
++    int (*can_read)(void *);
++    void (*receive)(void *, const uint8_t *, int);
++} Receiver;
++
++static uint8_t serial_rx[SERIAL_SIZE], serial_tx[SERIAL_SIZE];
++static uint8_t console_rx[CONSOLE_SIZE];
++static int16_t audio_pcm[AUDIO_SIZE];
++static SerialControl serial_ctrl;
++static RingControl console_ctrl;
++static AudioControl audio_ctrl;
++static Receiver serial_receiver, console_receiver;
++static uint32_t buttons;
++static uint32_t touch_ctrl[4]; /* sequence, down, x, y */
++static uint32_t touch_seen;
++static void *touch_opaque;
++static void (*touch_update)(void *, uint32_t, uint32_t, uint32_t);
++static void *display_opaque;
++static void (*display_update)(void *);
++static uint32_t display_width, display_height, display_stride, display_data;
++static uint32_t display_frames;
++static unsigned poll_count;
++static QEMUTimer *poll_timer;
++
++static void receive_ring(Receiver *r, const uint8_t *buf, uint32_t size,
++                         uint32_t *headp, uint32_t *tailp)
++{
++    if (!r->receive) {
++        return;
++    }
++    uint32_t head = qatomic_load_acquire(headp);
++    uint32_t tail = qatomic_read(tailp);
++    uint32_t avail = head - tail;
++    if (!avail || avail > size) {
++        return;
++    }
++    int room = r->can_read(r->opaque);
++    if (room <= 0) {
++        return;
++    }
++    uint32_t n = MIN(avail, MIN((uint32_t)room, size - tail % size));
++    r->receive(r->opaque, buf + tail % size, n);
++    qatomic_store_release(tailp, tail + n);
++}
++
++static void poll(void *opaque)
++{
++    pbl_gpio_set_button_state(qatomic_read(&buttons));
++    uint32_t seq = qatomic_load_acquire(&touch_ctrl[0]);
++    if (seq != touch_seen && touch_update) {
++        uint32_t down = qatomic_read(&touch_ctrl[1]);
++        uint32_t x = qatomic_read(&touch_ctrl[2]);
++        uint32_t y = qatomic_read(&touch_ctrl[3]);
++        if (seq == qatomic_load_acquire(&touch_ctrl[0])) {
++            touch_seen = seq;
++            touch_update(touch_opaque, down, x, y);
++        }
++    }
++    receive_ring(&serial_receiver, serial_rx, SERIAL_SIZE,
++                 &serial_ctrl.rx_head, &serial_ctrl.rx_tail);
++    receive_ring(&console_receiver, console_rx, CONSOLE_SIZE,
++                 &console_ctrl.head, &console_ctrl.tail);
++    if (++poll_count % 4 == 0 && display_update) {
++        display_update(display_opaque);
++    }
++    timer_mod(poll_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 8);
++}
++
++static void bridge_init(void)
++{
++    if (poll_timer) {
++        return;
++    }
++    serial_ctrl.rx_buf = (uint32_t)(uintptr_t)serial_rx;
++    serial_ctrl.rx_size = SERIAL_SIZE;
++    serial_ctrl.tx_buf = (uint32_t)(uintptr_t)serial_tx;
++    serial_ctrl.tx_size = SERIAL_SIZE;
++    console_ctrl.buf = (uint32_t)(uintptr_t)console_rx;
++    console_ctrl.size = CONSOLE_SIZE;
++    audio_ctrl.buf = (uint32_t)(uintptr_t)audio_pcm;
++    audio_ctrl.size = AUDIO_SIZE;
++    audio_ctrl.rate = 16000;
++    audio_ctrl.volume = 100;
++    poll_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, poll, NULL);
++    timer_mod(poll_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 8);
++}
++
++void pbl_wasm_display_register(void *opaque, void (*update)(void *))
++{
++    bridge_init();
++    display_opaque = opaque;
++    display_update = update;
++}
++
++void pbl_wasm_display_publish(QemuConsole *con, uint32_t width, uint32_t height)
++{
++    DisplaySurface *surface = qemu_console_surface(con);
++    display_width = width;
++    display_height = height;
++    display_stride = surface_stride(surface);
++    display_data = (uint32_t)(uintptr_t)surface_data(surface);
++    qatomic_store_release(&display_frames, display_frames + 1);
++}
++
++void pbl_wasm_touch_register(void *opaque,
++                             void (*update)(void *, uint32_t, uint32_t, uint32_t))
++{
++    bridge_init();
++    touch_opaque = opaque;
++    touch_update = update;
++}
++
++void pbl_wasm_serial_register(void *opaque, int (*can_read)(void *),
++                              void (*receive)(void *, const uint8_t *, int))
++{
++    bridge_init();
++    serial_receiver = (Receiver){opaque, can_read, receive};
++}
++
++void pbl_wasm_console_register(void *opaque, int (*can_read)(void *),
++                               void (*receive)(void *, const uint8_t *, int))
++{
++    bridge_init();
++    console_receiver = (Receiver){opaque, can_read, receive};
++}
++
++int pbl_wasm_serial_write(const uint8_t *buf, int len)
++{
++    uint32_t head = qatomic_read(&serial_ctrl.tx_head);
++    uint32_t tail = qatomic_load_acquire(&serial_ctrl.tx_tail);
++    uint32_t queued = head - tail;
++    if (len < 0 || queued > SERIAL_SIZE || (uint32_t)len > SERIAL_SIZE - queued) {
++        return 0;
++    }
++    for (int i = 0; i < len; i++) {
++        serial_tx[(head + i) % SERIAL_SIZE] = buf[i];
++    }
++    qatomic_store_release(&serial_ctrl.tx_head, head + len);
++    return len;
++}
++
++void pbl_wasm_audio_configure(uint32_t rate, uint32_t volume)
++{
++    bridge_init();
++    qatomic_set(&audio_ctrl.rate, rate ? rate : 16000);
++    qatomic_set(&audio_ctrl.volume, volume);
++}
++
++size_t pbl_wasm_audio_write(const int16_t *samples, size_t count)
++{
++    uint32_t head = qatomic_read(&audio_ctrl.head);
++    uint32_t tail = qatomic_load_acquire(&audio_ctrl.tail);
++    uint32_t queued = head - tail;
++    if (queued >= AUDIO_QUEUE_SAMPLES) {
++        return 0;
++    }
++    /* At most 32 ms at 16 kHz can be queued ahead of WebAudio. A slow or
++     * suspended browser stops acceptance, backpressuring the device IRQs. */
++    count = MIN(count, AUDIO_QUEUE_SAMPLES - queued);
++    for (size_t i = 0; i < count; i++) {
++        audio_pcm[(head + i) % AUDIO_SIZE] = samples[i];
++    }
++    qatomic_store_release(&audio_ctrl.head, head + count);
++    return count;
++}
++
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_display_width(void) { return display_width; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_display_height(void) { return display_height; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_display_stride(void) { return display_stride; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_display_data(void) { return display_data; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_display_frame_count(void) { return qatomic_read(&display_frames); }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_button_state_addr(void) { return (uint32_t)(uintptr_t)&buttons; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_touch_ctrl(void) { return (uint32_t)(uintptr_t)touch_ctrl; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_serial_ctrl(void) { return (uint32_t)(uintptr_t)&serial_ctrl; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_console_ctrl(void) { return (uint32_t)(uintptr_t)&console_ctrl; }
++EMSCRIPTEN_KEEPALIVE uint32_t pebble_wasm_audio_ctrl(void) { return (uint32_t)(uintptr_t)&audio_ctrl; }
++#endif
+diff --git a/include/hw/arm/pebble_wasm.h b/include/hw/arm/pebble_wasm.h
+new file mode 100644
+index 0000000..05d8bbe
+--- /dev/null
++++ b/include/hw/arm/pebble_wasm.h
+@@ -0,0 +1,35 @@
++/* Browser shared-memory bridges for the generic Pebble machines.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef HW_ARM_PEBBLE_WASM_H
++#define HW_ARM_PEBBLE_WASM_H
++
++#include "qemu/typedefs.h"
++
++#ifdef __EMSCRIPTEN__
++void pbl_wasm_display_register(void *opaque, void (*update)(void *));
++void pbl_wasm_display_publish(QemuConsole *con, uint32_t width, uint32_t height);
++void pbl_wasm_touch_register(void *opaque,
++                             void (*update)(void *, uint32_t, uint32_t, uint32_t));
++void pbl_wasm_serial_register(void *opaque, int (*can_read)(void *),
++                              void (*receive)(void *, const uint8_t *, int));
++int pbl_wasm_serial_write(const uint8_t *buf, int len);
++void pbl_wasm_console_register(void *opaque, int (*can_read)(void *),
++                               void (*receive)(void *, const uint8_t *, int));
++void pbl_wasm_audio_configure(uint32_t rate, uint32_t volume);
++size_t pbl_wasm_audio_write(const int16_t *samples, size_t count);
++
++/* Browser ABI: never pass QOM objects or host pointers across threads. */
++uint32_t pebble_wasm_display_width(void);
++uint32_t pebble_wasm_display_height(void);
++uint32_t pebble_wasm_display_stride(void);
++uint32_t pebble_wasm_display_data(void);
++uint32_t pebble_wasm_display_frame_count(void);
++uint32_t pebble_wasm_button_state_addr(void);
++uint32_t pebble_wasm_touch_ctrl(void);
++uint32_t pebble_wasm_serial_ctrl(void);
++uint32_t pebble_wasm_console_ctrl(void);
++uint32_t pebble_wasm_audio_ctrl(void);
++#endif
++
++#endif

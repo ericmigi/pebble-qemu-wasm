@@ -143,6 +143,7 @@
     <button id="btn-down" title="Down (Arrow Down)">Down</button>
   </div>
   <div class="hint">Keys: &larr; Back &middot; &uarr;/&darr; Navigate &middot; &rarr;/Enter Select &middot; buttons can be held &middot; the screen is a touchscreen (click/drag)</div>
+  <div id="audio-status" class="hint" role="status" hidden></div>
 
   <div id="install-panel">
     <div id="install-row">
@@ -378,6 +379,7 @@
     function updateButtons(bit, pressed) {
       buttonMask = pressed ? (buttonMask | bit) : (buttonMask & ~bit);
       if (!qemu) return;
+      if (pressed && currentBoard && currentBoard.audio) startAudio();
       if (currentBoard && currentBoard.classicButtons) {
         // QemuProtocol_Button: one byte, bit per ButtonId, same order as
         // the mask kept here (back, up, select, down).
@@ -501,52 +503,64 @@
     canvas.addEventListener('pointercancel', touchEnd);
 
     // ================================================================
-    // Audio: pebble_audio.c mirrors every PCM sample the firmware
-    // plays into a shared int16 ring; drain it into WebAudio on a
-    // 60 ms poll, scheduling chunks at a running playhead.
+    // Audio: WebAudio consumes the QEMU PCM ring on its sample clock.
+    // Publishing its read cursor backpressures the QEMU drain/refill path.
     // ================================================================
     var audioCtx = null;
-    var audioPlayhead = 0;
     var audioAddr = 0;
+    var audioNode = null;
+    var audioStarting = null;
+    var audioModuleUrl = null;
+    var audioModuleLoading = null;
+    var audioStatusEl = document.getElementById('audio-status');
 
-    function startAudio() {
-      if (audioCtx || !qemu) return;
-      if (typeof qemu._pebble_wasm_audio_ctrl !== 'function') return;
-      audioAddr = Number(qemu._pebble_wasm_audio_ctrl());
-      if (!audioAddr) return;
-      try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      } catch (e) { return; }
-      setInterval(drainAudio, 60);
-      log('[audio] output enabled');
+    function prepareAudioModule() {
+      if (audioModuleUrl) return Promise.resolve(audioModuleUrl);
+      if (audioModuleLoading) return audioModuleLoading;
+      // Keep the module in memory with the other boot assets. First input
+      // must not need a live dev server to start audio later in the session.
+      audioModuleLoading = fetch('./pebble-audio-worklet.js?v=20261007').then(function (resp) {
+        if (!resp.ok) throw new Error('Audio module: HTTP ' + resp.status);
+        return resp.text();
+      }).then(function (source) {
+        audioModuleUrl = URL.createObjectURL(new Blob([source], {type: 'text/javascript'}));
+        return audioModuleUrl;
+      }).finally(function () { audioModuleLoading = null; });
+      return audioModuleLoading;
     }
 
-    function drainAudio() {
-      if (!audioCtx || audioCtx.state === 'suspended') { if (audioCtx) audioCtx.resume(); }
-      var base = audioAddr >> 2;
-      var u32 = qemu.HEAPU32;
-      var buf = u32[base], size = u32[base + 1];
-      var head = Atomics.load(u32, base + 2);
-      var tail = Atomics.load(u32, base + 3);
-      if (head === tail) return;
-      var n = (head - tail) >>> 0;
-      if (n > size) { tail = head - size; n = size; }
-      var rate = u32[base + 4] || 16000;
-      var vol = (u32[base + 5] || 100) / 100;
-      var pcm = audioCtx.createBuffer(1, n, Math.max(3000, rate));
-      var ch = pcm.getChannelData(0);
-      var heap16 = new Int16Array(qemu.HEAPU8.buffer);
-      for (var i = 0; i < n; i++) {
-        ch[i] = (heap16[(buf >> 1) + ((tail + i) % size)] / 32768) * vol;
+    function startAudio() {
+      if (!qemu || typeof qemu._pebble_wasm_audio_ctrl !== 'function') return;
+      if (audioCtx) {
+        audioCtx.resume().catch(function (e) { log('[audio] ' + e.message); });
+        if (audioNode || audioStarting) return;
+      } else {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({latencyHint: 'interactive'});
+        audioCtx.resume().catch(function (e) { log('[audio] ' + e.message); });
+        audioCtx.onstatechange = function () {
+          if (audioNode) audioStatusEl.textContent = audioCtx.state === 'running'
+            ? 'Audio: on' : 'Audio: paused — press a watch button to resume';
+        };
       }
-      Atomics.store(u32, base + 3, head);
-      var src = audioCtx.createBufferSource();
-      src.buffer = pcm;
-      src.connect(audioCtx.destination);
-      var now = audioCtx.currentTime;
-      if (audioPlayhead < now + 0.02) audioPlayhead = now + 0.02;
-      src.start(audioPlayhead);
-      audioPlayhead += n / Math.max(3000, rate);
+      audioAddr = Number(qemu._pebble_wasm_audio_ctrl());
+      if (!audioAddr) return;
+      audioStarting = prepareAudioModule().then(function (url) {
+        return audioCtx.audioWorklet.addModule(url);
+      }).then(function () {
+        audioNode = new AudioWorkletNode(audioCtx, 'pebble-audio', {
+          numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
+          processorOptions: {memory: qemu.HEAPU8.buffer, control: audioAddr},
+        });
+        audioNode.port.onmessage = function (e) { window.__audioStats = e.data; };
+        audioNode.connect(audioCtx.destination);
+        window.__audioOutput = {context: audioCtx, node: audioNode};
+        audioStatusEl.textContent = audioCtx.state === 'running'
+          ? 'Audio: on' : 'Audio: paused — press a watch button to resume';
+        log('[audio] output enabled');
+      }).catch(function (e) {
+        audioStatusEl.textContent = 'Audio unavailable: ' + e.message + ' — reload after starting the server';
+        log('[audio] output failed: ' + e.message);
+      }).finally(function () { audioStarting = null; });
     }
 
     // ================================================================
@@ -693,10 +707,6 @@
           if (rtcIdx > 0) args[rtcIdx] = 'base=localtime,clock=vm';
         }
       }
-      if (board.audio && params.has('audio')) {
-        args[1] = board.machine + ',audiodev=snd0';
-        args.push('-audiodev', 'sdl,id=snd0');
-      }
       return args;
     }
 
@@ -711,6 +721,12 @@
       canvas.height = board.height;
 
       try {
+        audioStatusEl.hidden = !board.audio;
+        if (board.audio) {
+          setStatus('Loading audio module...');
+          await prepareAudioModule();
+          audioStatusEl.textContent = 'Audio: ready — press a watch button to enable sound';
+        }
         setStatus('Fetching micro flash (' + name + ')...');
         var micro = await fetchWithProgress('firmware/' + name + '/qemu_micro_flash.bin', 'Micro flash');
         var spi = await loadSavedSpi(name);
@@ -724,7 +740,7 @@
 
         setStatus('Loading QEMU WASM module...');
         var qemuDir = './' + (board.dir || '');
-        var WASM_VER = '20260825a';
+        var WASM_VER = 'pebble-audio-20261007';
         var factory = (await import(qemuDir + 'qemu-system-arm.js?v=' + WASM_VER)).default;
 
         var args = buildArgs(board);
